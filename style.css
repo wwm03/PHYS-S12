@@ -202,6 +202,133 @@ img:has(+ .caption) {
 
 /* Nav */
 
+/* page background */
+body {
+  background: #000;
+  margin: 0;
+  font-family: system-ui, sans-serif;
+}
+
+/* NAV WRAPPER */
+nav {
+  width: 90%;
+  margin: 1.2rem auto;
+  padding: 0.9rem 1.5rem;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  position: sticky;
+  top: 1rem;
+  z-index: 100;
+
+  /* glass */
+  background: rgba(10, 10, 10, 0.6);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+
+  border-radius: 16px;
+
+  /* gradient glow border */
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+nav::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  padding: 1px;
+
+  background: linear-gradient(
+    90deg,
+    #00f5ff,
+    #7c3aed,
+    #ff00cc,
+    #00f5ff
+  );
+
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* BRAND */
+#home {
+  color: white;
+  font-weight: 700;
+  text-decoration: none;
+  letter-spacing: -0.3px;
+}
+
+/* CENTER LINKS */
+.links {
+  display: flex;
+  gap: 1.5rem;
+
+  padding: 0.4rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* LINKS */
+.links a {
+  position: relative;
+
+  color: rgba(255, 255, 255, 0.75);
+  text-decoration: none;
+  font-size: 0.95rem;
+  font-weight: 500;
+
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+
+  transition: 0.25s ease;
+}
+
+/* 🔥 ONLY CHANGE: make About + Work white */
+.links a.about,
+.links a.work {
+  color: white;
+}
+
+/* hover neon glow */
+.links a:hover {
+  color: white;
+  text-shadow: 0 0 8px rgba(0, 245, 255, 0.6);
+}
+
+/* ACTIVE PILL */
+.links a.active {
+  color: white;
+  background: rgba(0, 245, 255, 0.12);
+  box-shadow:
+    0 0 0 1px rgba(0, 245, 255, 0.4),
+    0 0 18px rgba(0, 245, 255, 0.2);
+}
+
+/* SCROLL EFFECT (optional enhancement hook) */
+nav.scrolled {
+  background: rgba(0, 0, 0, 0.75);
+  transform: scale(0.98);
+  transition: 0.3s ease;
+}
+
+/* remove underline effect ONLY for About + Work */
+.links a.about::after,
+.links a.work::after {
+  display: none;
+}
+
+
+/*
 nav {
   height: clamp(0rem, 20vw, 10rem);
   width: 100vw;
@@ -222,7 +349,7 @@ nav a {
 nav #home {
   margin-right: auto;
 }
-
+-->
 /* Footer */
 
 footer {
