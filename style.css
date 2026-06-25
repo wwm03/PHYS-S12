@@ -55,9 +55,12 @@ b {
   font-weight: 700;
 }
 
+
+
 a {
   color: var(--text-color);
   text-decoration: none;
+  color:white
 }
 .links a {
   text-decoration: none;
@@ -210,6 +213,11 @@ img:has(+ .caption) {
 
 /* Nav */
 
+.bold{
+  font-weight: bold;
+}
+
+
 /* page background */
 body {
   background: #000;
@@ -222,6 +230,8 @@ nav {
   width: 90%;
   margin: 1.2rem auto;
   padding: 0.9rem 1.5rem;
+  font-weight: bold;
+  color: white;
 
   display: flex;
   align-items: center;
