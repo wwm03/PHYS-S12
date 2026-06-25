@@ -1,10 +1,10 @@
 var config = {
-  student_name: "YOUR NAME", // ie. John Doe
-  student_year_sem: "YOUR YEAR AND SEMESTER", // ie. Fall 2025
-  student_email: "YOUR EMAIL", // ie. jdoe@college.harvard.edu
+  student_name: "Wut Chomworawong", // ie. John Doe
+  student_year_sem: "Summer 2026", // ie. Fall 2025
+  student_email: "inboxwut@gmail.com", // ie. jdoe@college.harvard.edu
 
-  background_color: "#181818",
-  text_color: "#dedede",
+  background_color: "#000000",
+  text_color: "#0056e1",
   accent_color: "#FFFFFF",
 
   // Make sure to add the @import from Google Fonts to style.css, ask if you need help!
