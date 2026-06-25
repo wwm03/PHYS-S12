@@ -56,8 +56,16 @@ b {
 }
 
 a {
-  text-decoration: underline;
   color: var(--text-color);
+  text-decoration: none;
+}
+.links a {
+  text-decoration: none;
+}
+.links a.about,
+.links a.work {
+  color: white;
+  text-decoration: none;
 }
 
 ul, ol, tr{
