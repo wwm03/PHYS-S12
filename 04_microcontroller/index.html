@@ -19,13 +19,45 @@
       <h1>Week 4: Programming</h1>
       <h2>Devices that slowly torture you: earspliting no brainrot</h2>
 
-      <p>
-        Program your Xiao to do something. Explain how your code works and link any tutorials or resources you used. Record a video, include code snippets, and draw a schematic of your circuit.
+      <video controls>
+        <source src="./Assets/Demonstration.MOV" type="video/mp4">
+      </video>
+      <p> 
+      The earspliting no brainrot device I have created is exactly what it sounds like, it creates an earspliting annoying sound when you start to 
+      doomscroll hence the term brainrot. The no in "no brainrot" comes in as the annoying sound forces you to stop scrolling and place your phone back into
+      the enclosure, this ensures the destruction of bad social media habits in a timely and orderly fasion.
       </p>
-    
+      <h2>Device Schematic</h2>
+      <img src="./assets/schenatic.png" alt="">
       <p>
-        Add a <a href="./rawcode.html" target="_blank">link to your raw code</a>.
+        The schematic for the device is very simple with the VCC of the ultra sonic sensor conected to 5V, echoPin to D5, trigPin to D6, and GND to GND.
+        For the buzzer the postive pin is connected to D7 and the negative pin is connected to GND.
       </p>
+      <h2>Physical Wiring</h2>
+      <img src="./assets/1.png" alt="">
+      <h2>Coding Process</h2>
+      
+      <p>
+       <a href="./rawcode.html" target="_blank">CLick Me! Link to raw code</a>.
+      </p>
+      <p>
+        The logic behind my code was very simple as the ultra sonic sensor had to detect if there was anything in the range of 10 cm and if there is nothing happens
+        However, if there is nothing in the range of 10 cm the buzzer would start going off. This is shown in "Code 1".      </p>
+      <img src="./assets/ultra sound.png" alt="">
+      <p class = "caption">Code 1</p>
+      <p>
+        Logic is only part of the code as I had to know how to set up the utlrasonic sensor and buzzer which is when I found a tutorial. The tutorial taught
+        me how to set up the sensor and how to translate the data the sensor gives to a distance I could understand. This is shown in "Code 2".
+      </p>
+      <a class="caption" href="https://howtomechatronics.com/tutorials/arduino/ultrasonic-sensor-hc-sr04/">Click Me! Link to Tutorial</a>
+      <img src="./assets/3.png" alt="">
+      <p class = "caption">Code 2</p>
+      <h2>Encolsure Design</h2>
+      <img src="./assets/Enclosure.png" alt="">
+      <p>I created an enclosure to hold the device and to place the phone into, I used a similar design to my box in week 2.</p>
+      </p> <a class="caption" href="./Assets/lock in.dxf" download>Click Me! link to enclosure stl</a></p>
+
+
     </section>
   </body>
 
