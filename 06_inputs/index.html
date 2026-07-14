@@ -139,6 +139,44 @@ long tx_rx() {  // Function to execute rx_tx algorithm and return a value
       I calibrated the photoresistor by measuring the response at different lights, when I shone a flashlight onto the photoresistor it read over 4000, in ambient
       light it was around 3000, under a table it was around 1100, and finally when I covered the photoresistor with my hand it read around 100.
       </P>
+<pre><code>
+int lightPin = A0;
+int ledPin = D8;
+int ledPin2 = D6;
+int ledPin3 = D7;
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(lightPin, INPUT);
+  pinMode(ledPin, OUTPUT);
+  pinMode(ledPin2, OUTPUT);
+  pinMode(ledPin3, OUTPUT);
+}
+
+void loop() {
+  int result = analogRead(lightPin);
+  Serial.println(result);
+  if (result > 4000) { //Red
+    digitalWrite(ledPin, HIGH);
+    digitalWrite(ledPin2, LOW);
+    digitalWrite(ledPin3, LOW);
+  } else if (result > 3000) { //Yellow
+    digitalWrite(ledPin2, HIGH);
+    digitalWrite(ledPin, LOW);
+    digitalWrite(ledPin3, LOW);
+  } else { //Green
+    digitalWrite(ledPin3, HIGH);
+    digitalWrite(ledPin, LOW);
+    digitalWrite(ledPin2, LOW);
+  }
+}
+</code></pre>
+      <P style="color: white;">
+      The code works by first reading the analog signal that is comes in through A0 and turns on an led based on that reading. If the reading is greater than 
+      4000 the red led would light up, greater than 3000 but less than 4000 would light up the yellow led, and less than 3000 would light up the green led. The values
+      are determined in my calibration graph so that 4000 would be flash, 3000 would be ambient light, and less than 3000 would be under the table.
+      </P>
+    
       
       
     </section>
