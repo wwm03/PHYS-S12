@@ -43,12 +43,14 @@
       reprinted the cap with the correct thread size, however there was still a lot of friction and is really hard to screw in and out.
       </p>
       <p>I followed this <a href="https://www.youtube.com/watch?v=eWGCv48ylEQ&t=120s" >youtube tutorial</a> to create threads in fusion. </p>
-
       <p> <a href="./Assets/Bottle_Case.stl" download>Click Me! Link to Case STL</a> </p>
       <p> <a href="./Assets/Bottle_Lid.stl" download>Click Me! Link to Lid STL</a> </p>
+
       <h2>PCB</h2>
       <img src = "./Assets/PCB.png">
       <p style= color:white>I have documented the PCB creation process of my MVP in the "Week 8: CNC" page of website.</p>
+      <p><a href="https://wwm03.github.io/PHYS-S12/08_cnc/index.html" >Click Me! Link to PCB website page</a> </p>
+
       <h2>Wiring</h2>
       <img src = "./Assets/Wire.png">
       <p style = color:white> I connected the wires from my PCB to two pieces of copper tape using solder, the pieces of copper tape are attatched onto the side of my 3D printed case opposite from each other.
@@ -58,7 +60,9 @@
       <img src = "./Assets/Graph.png">
       <p style = color:white> 
       I used the code below which I also used in the week 6 project that also involved capacitance. My results were pretty linear as the values for
-      capacitance increased in equal intervals when I increased the amount of water inside the bottle by 50 ml.
+      capacitance increased in equal intervals when I increased the amount of water inside the bottle by 50 ml. However, I encountered a problem as the next
+      morning after I calibrated the capacitance the values became very different from the ones I got yesterday which ruined what progress I had on the code
+      yesterday, I was also scared that this would happen again.
       </p>
 <pre><code>
 long result;  //variable for the result of the tx_rx measurement.
@@ -119,6 +123,7 @@ long tx_rx() {  // Function to execute rx_tx algorithm and return a value
 }          
 </code></pre>
       
+      <h2>Coding</h2>
 
 
       <p></p>
