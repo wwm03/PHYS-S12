@@ -35,13 +35,52 @@
       a water bottle. 
       </p>
 
-      <h2>PCB schematic</h2>
+      <h2>PCB design</h2>
       <img src = "./Assets/PCB.png">
       <p class = "caption">Link to slides: https://docs.google.com/presentation/d/1nJxkHjFghOLMLG9y3Jg8hHeLzAsGRRuC-UVfzDiuMeY/edit?slide=id.g3976f340c46_0_1#slide=id.g3976f340c46_0_1</p>
       <p style = color:white>
       Using Ki-Cad I was able to render the schematic into an actual PCB, I followed the guide Victor gave us to create the PCB, I posted the link to the slides above.
+      After finishing the PCB design you want to generate drill files which will give you NPTH, PTH, Fcu, and edgecuts files.
       </p>
-      
+
+      <h2>PCB Render</h2>
+      <div class="img-duo">
+        <img src="./Assets/Edgecuts.png" alt="">
+        <img src="./Assets/FrontCopper.png" alt="">
+      </div>
+      <p style = color:white>
+      After generating the drill files and locating the files you want gerber2img website and drag in the NPTH, PTH, and edgecut files together, this should
+      result in an image similar to the picture on the left, you then want to click black&white and lock the origin and dimensions. You can now download the first
+      render, after this you can drag in the Fcu or FrontCopper file resulting in an image similar to the one on the right, you also want to download the render.
+      </p>
+
+      <h2>PCB Print</h2>
+      <img src = "./Assets/Setup.png">
+      <p style = color:white>
+      I moved to printing the PCB by following this tutorial video: https://nathanmelenbrink.github.io/lab/cnc/pcb-cnc-tutorial.html I uploaded the frontcopper
+      files first and calibrated the machine using the 30 degrees V-bit and generated the toolpath using CircuitTraces preset then milled the first layer.
+      </p>
+      <video controls>
+        <source src="./Assets/IMG_1895.MOV" type="video/mp4">
+      </video>
+      <p style = color:white>
+      I followed the same tutorial to then upload the edgecuts file, I then switched the drill bit to the 1/32'' endmill and used the circuit outline preset
+      to generate the toolpath and then milled the second layer.
+      <p>
+      <video controls>
+        <source src="./Assets/IMG_1900.MOV" type="video/mp4">
+      </video>
+
+      <h2>Post Processing</h2>
+      <div class="img-duo">
+        <img src="./Assets/solder.png" alt="">
+        <img src="./Assets/Solder_Finish.png" alt="">
+      </div>
+      <p style = color:white>
+      I still had to post process the PCB as I still had to solder on the socket headers to attatch my microcontroller onto the PCB, I also had to solder on
+      the wires that would connect to the copper tape I will use to read the capacitance on my waterbottle. The post processing step was done by my parter
+      Otavio.
+      </p>
       
     </section>
   </body>
