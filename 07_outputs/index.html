@@ -22,7 +22,7 @@
         Document your minimum viable project either here or in the <a href="../13_finalproject/index.html">Final Project tab</a>.
       </p>
       <h2>
-      DrinkMore-Water bottle attatchment
+      DrinkMore-Smart Water bottle attatchment
       </h2>
       <p style = color:white>My device is a case for a water bottle that can track the amount of water you drink and sends reminders to drink in a set amount of time based on the 
         last time you drank water. 
@@ -42,9 +42,83 @@
       part on the inside to store the battery and microcontroler. I encountered my first problem in my first print is I printed the wrong size so threads. I 
       reprinted the cap with the correct thread size, however there was still a lot of friction and is really hard to screw in and out.
       </p>
+      <p>I followed this <a href="https://www.youtube.com/watch?v=eWGCv48ylEQ&t=120s" >youtube tutorial</a> to create threads in fusion. </p>
+
       <p> <a href="./Assets/Bottle_Case.stl" download>Click Me! Link to Case STL</a> </p>
       <p> <a href="./Assets/Bottle_Lid.stl" download>Click Me! Link to Lid STL</a> </p>
-      <h2>PCB/Wiring</h2>
+      <h2>PCB</h2>
+      <img src = "./Assets/PCB.png">
+      <p style= color:white>I have documented the PCB creation process of my MVP in the "Week 8: CNC" page of website.</p>
+      <h2>Wiring</h2>
+      <img src = "./Assets/Wire.png">
+      <p style = color:white> I connected the wires from my PCB to two pieces of copper tape using solder, the pieces of copper tape are attatched onto the side of my 3D printed case opposite from each other.
+      </p>
+
+      <h2>Calibration</h2>
+      <img src = "./Assets/Graph.png">
+      <p style = color:white> 
+      I used the code below which I also used in the week 6 project that also involved capacitance. My results were pretty linear as the values for
+      capacitance increased in equal intervals when I increased the amount of water inside the bottle by 50 ml.
+      </p>
+<pre><code>
+long result;  //variable for the result of the tx_rx measurement.
+int analog_pin = A0;
+int tx_pin = D4;
+int ledPin = D8;
+int ledPin2 = D6;
+int ledPin3 = D7;
+
+void setup() {
+  pinMode(tx_pin, OUTPUT);  //Pin 4 provides the voltage step
+  Serial.begin(9600);
+  pinMode(ledPin, OUTPUT);
+  pinMode(ledPin2, OUTPUT);
+  pinMode(ledPin3, OUTPUT);
+}
+
+void loop() {
+  result = tx_rx();
+  Serial.println(result);
+  if (result > 300000) {
+    digitalWrite(ledPin, HIGH);
+    digitalWrite(ledPin2, LOW);
+    digitalWrite(ledPin3, LOW);
+  } else if (result > 70000) {
+    digitalWrite(ledPin2, HIGH);
+    digitalWrite(ledPin, LOW);
+    digitalWrite(ledPin3, LOW);
+  } else {
+    digitalWrite(ledPin3, HIGH);
+    digitalWrite(ledPin, LOW);
+    digitalWrite(ledPin2, LOW);
+  }
+}
+
+
+long tx_rx() {  // Function to execute rx_tx algorithm and return a value
+                // that depends on coupling of two electrodes.
+                // Value returned is a long integer.
+  int read_high;
+  int read_low;
+  int diff;
+  long int sum;
+  int N_samples = 100;  // Number of samples to take.  Larger number slows it down, but reduces scatter.
+
+  sum = 0;
+
+  for (int i = 0; i < N_samples; i++) {
+    digitalWrite(tx_pin, HIGH);          // Step the voltage high on conductor 1.
+    read_high = analogRead(analog_pin);  // Measure response of conductor 2.
+    delayMicroseconds(100);              // Delay to reach steady state.
+    digitalWrite(tx_pin, LOW);           // Step the voltage to zero on conductor 1.
+    read_low = analogRead(analog_pin);   // Measure response of conductor 2.
+    diff = read_high - read_low;         // desired answer is the difference between high and low.
+    sum += diff;                         // Sums up N_samples of these measurements.
+  }
+  return sum;
+}          
+</code></pre>
+      
 
 
       <p></p>
