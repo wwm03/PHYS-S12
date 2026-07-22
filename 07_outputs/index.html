@@ -153,10 +153,33 @@ long tx_rx() {  // Function to execute rx_tx algorithm and return a value
       and the code records that number, adding it to the previous total amount of water drunk. The code also dectects refilling (if the water level increases by 50 mL) then activates the code that will set the reference water level to the water level after the refill. The website then requests data to 
       update the website, the ESP32 responds with the data, examples include the total water drunk, current water level, raw capacitance reading, amount of last drink, the number of drinks today, and how long until the next reminder. Then the percentage bar for the goal of water drunk is calculated.
       The website also has a reminder timer that can measure the amount of time after your last drink and will send a message to remind you to drink water.
-      
       </p>
+              <a>Disclaimer: AI was used in assistance for coding</a>
+      <h3>Problems&Solutions</h3>
+      	<img src = "./Assets/Water Calibrate.png">
+        <p style = color:white>
+        As I have stated in the calibration section, the capacitive sensor is very sensitive to environmental changes and that the readings were very
+        different from when I took readings the previous night or the next morning. To solve this problem of inconstancy I edited the code to require
+        a calibration by taking the maximum and minimum values of the sensor that I explained in the final iteration section. This ensures that the 
+        code would be able to work under any environmental changes. 
+        </p>
 
-      <p></p>
+      <h2>MVP in action</h2>
+      <video controls>
+        <source src="./Assets/MVP.MOV" type="video/mp4">
+      </video>
+      <p class = "caption">MVP in action</p>      
+      <video controls>
+        <source src="./Assets/Website.mp4" type="video/mp4">
+      </video>
+      <p class = "caption">Website features</p>
+      <h2>Reflection&Improvements</h2>
+      <p style = color:white>
+      The MVP is able to detect water being added or removed and translate that to the website very well. However the cons are that the website takes 
+      really long to load and readings are not very accurate, as when I removed around 200 mL of water it only registered as 63 mL. For my final project
+      I will use another sensor in conjuction with the capacitive sensor to create more accurate readings. I might also change the thread system of attatching
+      the body and lid to a press fit system of attatching the lid to the body.
+      </p>
     </section>
   </body>
 
