@@ -1,0 +1,700 @@
+<link rel="stylesheet" href="../style.css">
+
+<pre><code style = "color:rgb(255, 255, 255);">
+/*
+  FAST Smart Water Bottle
+  Board: Seeed Studio XIAO ESP32C3
+
+  This version is intentionally small and fast:
+  - ESP32 hosts the webpage itself
+  - Manual empty/full raw calibration
+  - Sensor reading does not block the website for 5 seconds
+  - Shows raw reading, bottle mL, daily total, and progress
+  - Simple page reminder while the browser page stays open
+
+  Serial Monitor: 115200 baud
+*/
+
+#include &lt;WiFi.h&gt;
+#include &lt;WebServer.h&gt;
+
+// ============================================================
+// CHANGE THESE
+// ============================================================
+
+const char* WIFI_NAME = "MAKERSPACE";
+const char* WIFI_PASSWORD = "12345678";
+
+// ============================================================
+// SENSOR
+// ============================================================
+
+const int analog_pin = A0;
+const int tx_pin = D3;
+
+const float BOTTLE_SIZE_ML = 500.0f;
+const float DAILY_GOAL_ML = 3000.0f;
+
+const float DRINK_THRESHOLD_ML = 50.0f;
+const float REFILL_THRESHOLD_ML = 50.0f;
+
+// Raw calibration values entered on the webpage
+long emptyRaw = 0;
+long fullRaw = 0;
+bool calibrated = false;
+
+// Current sensor values
+long rawReading = 0;
+float water = 0.0f;
+float filteredWater = 0.0f;
+bool filterStarted = false;
+
+// Water tracking
+float referenceWater = 0.0f;
+float totalDrank = 0.0f;
+float lastDrink = 0.0f;
+int drinksToday = 0;
+bool trackingStarted = false;
+
+// Reminder timer
+unsigned long lastDrinkTime = 0;
+const unsigned long REMINDER_TIME = 3600000UL;
+
+// ============================================================
+// FAST NON-BLOCKING AVERAGING
+// ============================================================
+
+// Take one sensor sample about every 100 ms.
+// All samples collected during a full 5-second window are averaged.
+// The displayed raw value and water level update only once every 5 seconds.
+const unsigned long SAMPLE_INTERVAL = 100UL;
+const unsigned long AVERAGE_WINDOW = 5000UL;
+
+unsigned long lastSampleAt = 0;
+unsigned long averageWindowStartedAt = 0;
+
+int64_t rawTotal = 0;
+uint32_t rawCount = 0;
+
+// ============================================================
+// WEB SERVER
+// ============================================================
+
+WebServer server(80);
+
+// ============================================================
+// SMALL WEBPAGE
+// ============================================================
+
+const char PAGE[] PROGMEM = R"HTML
+&lt;!doctype html&gt;
+&lt;html&gt;
+&lt;head&gt;
+  &lt;meta charset="utf-8"&gt;
+  &lt;meta name="viewport" content="width=device-width,initial-scale=1"&gt;
+  &lt;title&gt;Water Tracker&lt;/title&gt;
+  &lt;style&gt;
+    body{
+      margin:0;
+      padding:16px;
+      font-family:Arial,sans-serif;
+      color:#17344c;
+      background:#eef8ff
+    }
+    main{
+      max-width:500px;
+      margin:18px auto;
+      padding:22px;
+      background:white;
+      border:1px solid #d7e7f2;
+      border-radius:20px
+    }
+    h1{text-align:center;margin:0 0 18px}
+    .box{
+      padding:15px;
+      margin-top:12px;
+      background:#f5faff;
+      border:1px solid #d7e7f2;
+      border-radius:14px
+    }
+    label{
+      display:block;
+      margin:10px 0 5px;
+      font-size:14px;
+      color:#657d90
+    }
+    input,button{
+      width:100%;
+      padding:12px;
+      font-size:16px;
+      border-radius:11px;
+      box-sizing:border-box
+    }
+    input{border:1px solid #b9cede}
+    button{
+      margin-top:12px;
+      border:0;
+      font-weight:bold;
+      cursor:pointer;
+      color:white;
+      background:#1689e8
+    }
+    button.alt{
+      color:#a33;
+      background:white;
+      border:1px solid #d99
+    }
+    .big{
+      margin-top:22px;
+      text-align:center;
+      font-size:42px;
+      font-weight:bold
+    }
+    .center{text-align:center;color:#657d90}
+    .track{
+      height:22px;
+      margin-top:18px;
+      overflow:hidden;
+      background:#dcefff;
+      border-radius:999px
+    }
+    .fill{
+      width:0%;
+      height:100%;
+      background:#1689e8;
+      transition:width .4s
+    }
+    .grid{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:10px;
+      margin-top:18px
+    }
+    .stat{
+      padding:14px 8px;
+      text-align:center;
+      background:#f5faff;
+      border:1px solid #d7e7f2;
+      border-radius:13px
+    }
+    .name{font-size:13px;color:#657d90}
+    .value{margin-top:5px;font-size:21px;font-weight:bold}
+    #msg,#status{
+      margin-top:12px;
+      text-align:center;
+      font-size:13px;
+      color:#657d90
+    }
+    .hidden{display:none}
+  &lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;main&gt;
+  &lt;h1&gt;Water Tracker&lt;/h1&gt;
+
+  &lt;section id="calBox" class="box"&gt;
+    &lt;b&gt;Calibration&lt;/b&gt;
+    &lt;div id="liveRaw" class="big"&gt;---&lt;/div&gt;
+    &lt;div class="center"&gt;Current raw reading&lt;/div&gt;
+
+    &lt;label for="empty"&gt;Empty bottle raw value&lt;/label&gt;
+    &lt;input id="empty" type="number" step="1" placeholder="Example: 2400"&gt;
+
+    &lt;label for="full"&gt;500 mL raw value&lt;/label&gt;
+    &lt;input id="full" type="number" step="1" placeholder="Example: 3400"&gt;
+
+    &lt;button id="calibrate"&gt;Use these values&lt;/button&gt;
+    &lt;div id="msg"&gt;Enter both raw values.&lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section id="dash" class="hidden"&gt;
+    &lt;div class="big"&gt;&lt;span id="total"&gt;0&lt;/span&gt; mL&lt;/div&gt;
+    &lt;div class="center"&gt;of 3000 mL today&lt;/div&gt;
+
+    &lt;div class="track"&gt;&lt;div id="fill" class="fill"&gt;&lt;/div&gt;&lt;/div&gt;
+    &lt;div id="progressText" class="center"&gt;0% complete&lt;/div&gt;
+
+    &lt;div class="grid"&gt;
+      &lt;div class="stat"&gt;
+        &lt;div class="name"&gt;Bottle now&lt;/div&gt;
+        &lt;div class="value"&gt;&lt;span id="bottle"&gt;0&lt;/span&gt; mL&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="stat"&gt;
+        &lt;div class="name"&gt;Raw reading&lt;/div&gt;
+        &lt;div id="raw" class="value"&gt;0&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="stat"&gt;
+        &lt;div class="name"&gt;Last drink&lt;/div&gt;
+        &lt;div class="value"&gt;&lt;span id="last"&gt;0&lt;/span&gt; mL&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="stat"&gt;
+        &lt;div class="name"&gt;Drinks today&lt;/div&gt;
+        &lt;div id="count" class="value"&gt;0&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="stat"&gt;
+        &lt;div class="name"&gt;Next reminder&lt;/div&gt;
+        &lt;div class="value"&gt;&lt;span id="reminder"&gt;60&lt;/span&gt; min&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="stat"&gt;
+        &lt;div class="name"&gt;Calibration span&lt;/div&gt;
+        &lt;div id="span" class="value"&gt;0&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+
+    &lt;button id="enableReminder"&gt;Enable page reminder&lt;/button&gt;
+    &lt;button id="recalibrate" class="alt"&gt;Recalibrate&lt;/button&gt;
+    &lt;button id="reset" class="alt"&gt;Reset today's total&lt;/button&gt;
+  &lt;/section&gt;
+
+  &lt;div id="status"&gt;Connecting...&lt;/div&gt;
+&lt;/main&gt;
+
+&lt;script&gt;
+let reminders=false;
+let lastAlert=-1;
+
+const q=id=&gt;document.getElementById(id);
+
+async function data(){
+  const r=await fetch('/data?t='+Date.now(),{cache:'no-store'});
+  if(!r.ok) throw new Error();
+  return r.json();
+}
+
+async function update(){
+  try{
+    const d=await data();
+
+    q('liveRaw').textContent=d.raw;
+    q('raw').textContent=d.raw;
+
+    if(d.calibrated){
+      q('calBox').classList.add('hidden');
+      q('dash').classList.remove('hidden');
+    }else{
+      q('calBox').classList.remove('hidden');
+      q('dash').classList.add('hidden');
+    }
+
+    q('total').textContent=Math.round(d.total);
+    q('bottle').textContent=Math.round(d.water);
+    q('last').textContent=Math.round(d.last);
+    q('count').textContent=d.count;
+    q('reminder').textContent=d.reminder;
+    q('span').textContent=Math.abs(d.span);
+    q('fill').style.width=d.percent+'%';
+    q('progressText').textContent=Math.round(d.percent)+'% complete';
+
+    if(d.seconds&lt;3600) lastAlert=-1;
+
+    if(reminders && d.seconds&gt;=3600){
+      const n=Math.floor(d.seconds/3600);
+      if(n!==lastAlert){
+        lastAlert=n;
+        alert('It has been one hour. Drink some water!');
+      }
+    }
+
+    q('status').textContent='Live - '+new Date().toLocaleTimeString();
+  }catch(e){
+    q('status').textContent='Connection lost. Reload the page.';
+  }
+}
+
+q('calibrate').onclick=async()=&gt;{
+  const empty=q('empty').value.trim();
+  const full=q('full').value.trim();
+
+  if(!empty||!full){
+    q('msg').textContent='Enter both values.';
+    return;
+  }
+
+  try{
+    const body='empty='+encodeURIComponent(empty)+'&full='+encodeURIComponent(full);
+
+    const r=await fetch('/calibrate',{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body
+    });
+
+    const result=await r.json();
+    q('msg').textContent=result.message;
+
+    if(!r.ok) return;
+    await update();
+  }catch(e){
+    q('msg').textContent='Calibration failed.';
+  }
+};
+
+q('enableReminder').onclick=()=&gt;{
+  reminders=true;
+  q('enableReminder').textContent='Page reminder enabled';
+  q('enableReminder').disabled=true;
+};
+
+q('recalibrate').onclick=async()=&gt;{
+  await fetch('/recalibrate',{method:'POST'});
+  await update();
+};
+
+q('reset').onclick=async()=&gt;{
+  if(confirm("Reset today's total?")){
+    await fetch('/reset',{method:'POST'});
+    await update();
+  }
+};
+
+update();
+setInterval(update,5000);
+&lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+)HTML";
+
+// ============================================================
+// SENSOR FUNCTION
+// ============================================================
+
+long tx_rx() {
+  int read_high;
+  int read_low;
+  long sum = 0;
+
+  const int N_samples = 100;
+
+  for (int i = 0; i &lt; N_samples; i++) {
+    digitalWrite(tx_pin, HIGH);
+    read_high = analogRead(analog_pin);
+
+    delayMicroseconds(100);
+
+    digitalWrite(tx_pin, LOW);
+    read_low = analogRead(analog_pin);
+
+    sum += read_high - read_low;
+  }
+
+  return sum;
+}
+
+// ============================================================
+// CALCULATION
+// ============================================================
+
+float rawToMl(long raw) {
+  if (!calibrated || fullRaw == emptyRaw) {
+    return 0.0f;
+  }
+
+  float ml =
+    BOTTLE_SIZE_ML *
+    (float)(raw - emptyRaw) /
+    (float)(fullRaw - emptyRaw);
+
+  if (ml &lt; 0.0f) ml = 0.0f;
+  if (ml &gt; BOTTLE_SIZE_ML) ml = BOTTLE_SIZE_ML;
+
+  return ml;
+}
+
+void processWaterTracking() {
+  if (!calibrated) return;
+
+  if (!trackingStarted) {
+    referenceWater = water;
+    lastDrinkTime = millis();
+    trackingStarted = true;
+    return;
+  }
+
+  if (water &gt; referenceWater + REFILL_THRESHOLD_ML) {
+    referenceWater = water;
+    Serial.println("Refill detected");
+    return;
+  }
+
+  if (referenceWater - water &gt;= DRINK_THRESHOLD_ML) {
+    float drank = referenceWater - water;
+
+    if (drank &lt;= BOTTLE_SIZE_ML) {
+      totalDrank += drank;
+      lastDrink = drank;
+      drinksToday++;
+      lastDrinkTime = millis();
+
+      Serial.print("Drank: ");
+      Serial.print(drank, 0);
+      Serial.println(" mL");
+    }
+
+    referenceWater = water;
+  }
+}
+
+void updateSensor() {
+  unsigned long now = millis();
+
+  // Start the first five-second averaging window.
+  if (averageWindowStartedAt == 0) {
+    averageWindowStartedAt = now;
+  }
+
+  // Collect one reading approximately every 100 ms.
+  if (now - lastSampleAt &gt;= SAMPLE_INTERVAL) {
+    lastSampleAt = now;
+
+    rawTotal += tx_rx();
+    rawCount++;
+  }
+
+  // Do not update the displayed value until five seconds have passed.
+  if (now - averageWindowStartedAt &lt; AVERAGE_WINDOW) {
+    return;
+  }
+
+  if (rawCount == 0) {
+    averageWindowStartedAt = now;
+    return;
+  }
+
+  uint32_t completedSampleCount = rawCount;
+
+  // Average every reading collected during the complete five-second window.
+  rawReading = static_cast&lt;long&gt;(rawTotal / rawCount);
+
+  rawTotal = 0;
+  rawCount = 0;
+  averageWindowStartedAt = now;
+
+  if (calibrated) {
+    float newWater = rawToMl(rawReading);
+
+    if (!filterStarted) {
+      filteredWater = newWater;
+      filterStarted = true;
+    } else {
+      // Additional smoothing between consecutive five-second averages.
+      filteredWater =
+        0.25f * newWater +
+        0.75f * filteredWater;
+    }
+
+    water = filteredWater;
+
+    processWaterTracking();
+  }
+
+  Serial.print("5-second average raw: ");
+  Serial.print(rawReading);
+
+  if (calibrated) {
+    Serial.print("   Water: ");
+    Serial.print(water, 0);
+    Serial.print(" mL");
+  }
+
+  Serial.print("   Samples averaged: ");
+  Serial.println(completedSampleCount);
+}
+
+// ============================================================
+// WEB ROUTES
+// ============================================================
+
+void handleData() {
+  float percent = totalDrank / DAILY_GOAL_ML * 100.0f;
+
+  if (percent &lt; 0.0f) percent = 0.0f;
+  if (percent &gt; 100.0f) percent = 100.0f;
+
+  unsigned long secondsSinceDrink =
+    trackingStarted
+      ? (millis() - lastDrinkTime) / 1000UL
+      : 0;
+
+  long secondsLeft = 3600L - (long)secondsSinceDrink;
+  if (secondsLeft &lt; 0) secondsLeft = 0;
+
+  unsigned long reminderMinutes =
+    (secondsLeft + 59UL) / 60UL;
+
+  char json[320];
+
+  snprintf(
+    json,
+    sizeof(json),
+    "{\"calibrated\":%s,"
+    "\"raw\":%ld,"
+    "\"water\":%.0f,"
+    "\"total\":%.0f,"
+    "\"last\":%.0f,"
+    "\"count\":%d,"
+    "\"percent\":%.1f,"
+    "\"seconds\":%lu,"
+    "\"reminder\":%lu,"
+    "\"span\":%ld}",
+    calibrated ? "true" : "false",
+    rawReading,
+    water,
+    totalDrank,
+    lastDrink,
+    drinksToday,
+    percent,
+    secondsSinceDrink,
+    reminderMinutes,
+    fullRaw - emptyRaw
+  );
+
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", json);
+}
+
+void handleCalibrate() {
+  if (!server.hasArg("empty") || !server.hasArg("full")) {
+    server.send(
+      400,
+      "application/json",
+      "{\"message\":\"Enter both values.\"}"
+    );
+    return;
+  }
+
+  long newEmpty = server.arg("empty").toInt();
+  long newFull = server.arg("full").toInt();
+
+  if (newEmpty &lt;= 0 || newFull &lt;= 0) {
+    server.send(
+      400,
+      "application/json",
+      "{\"message\":\"Values must be positive numbers.\"}"
+    );
+    return;
+  }
+
+  if (labs(newFull - newEmpty) &lt; 20) {
+    server.send(
+      400,
+      "application/json",
+      "{\"message\":\"Empty and full values are too close.\"}"
+    );
+    return;
+  }
+
+  emptyRaw = newEmpty;
+  fullRaw = newFull;
+  calibrated = true;
+
+  filterStarted = false;
+  trackingStarted = false;
+
+  Serial.print("Empty raw: ");
+  Serial.println(emptyRaw);
+
+  Serial.print("Full raw: ");
+  Serial.println(fullRaw);
+
+  server.send(
+    200,
+    "application/json",
+    "{\"message\":\"Calibration accepted.\"}"
+  );
+}
+
+void handleRecalibrate() {
+  calibrated = false;
+  filterStarted = false;
+  trackingStarted = false;
+  water = 0.0f;
+
+  server.send(
+    200,
+    "application/json",
+    "{\"message\":\"Ready to recalibrate.\"}"
+  );
+}
+
+void handleReset() {
+  totalDrank = 0.0f;
+  lastDrink = 0.0f;
+  drinksToday = 0;
+  lastDrinkTime = millis();
+
+  server.send(
+    200,
+    "application/json",
+    "{\"message\":\"Total reset.\"}"
+  );
+}
+
+// ============================================================
+// SETUP / LOOP
+// ============================================================
+
+void setup() {
+  pinMode(tx_pin, OUTPUT);
+  pinMode(analog_pin, INPUT);
+  digitalWrite(tx_pin, LOW);
+
+  Serial.begin(115200);
+  delay(1200);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+
+  WiFi.begin(WIFI_NAME, WIFI_PASSWORD);
+
+  Serial.print("Connecting");
+
+  unsigned long started = millis();
+
+  while (
+    WiFi.status() != WL_CONNECTED &&
+    millis() - started &lt; 30000UL
+  ) {
+    delay(400);
+    Serial.print(".");
+  }
+
+  Serial.println();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Wi-Fi failed. Check name/password.");
+    return;
+  }
+
+  Serial.print("Open: http://");
+  Serial.println(WiFi.localIP());
+
+  server.on("/", HTTP_GET, []() {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send_P(200, "text/html", PAGE);
+  });
+
+  server.on("/data", HTTP_GET, handleData);
+  server.on("/calibrate", HTTP_POST, handleCalibrate);
+  server.on("/recalibrate", HTTP_POST, handleRecalibrate);
+  server.on("/reset", HTTP_POST, handleReset);
+
+  server.on("/ping", HTTP_GET, []() {
+    server.send(200, "text/plain", "OK");
+  });
+
+  server.begin();
+
+  averageWindowStartedAt = millis();
+  lastSampleAt = millis();
+
+  Serial.println("Server ready");
+  Serial.println("Sensor values update once every 5 seconds.");
+}
+
+void loop() {
+  server.handleClient();
+  updateSensor();
+  delay(1);
+}
+</code></pre>

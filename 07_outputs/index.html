@@ -124,7 +124,34 @@ long tx_rx() {  // Function to execute rx_tx algorithm and return a value
 </code></pre>
       
       <h2>Coding</h2>
-
+      <p>
+       <a href="./Realcode.html" target="_blank">CLick Me! Link to raw code</a>
+      </p>
+      <h3>First Iteration</h3>
+      <p></p>
+       <a href="./FirstCode.html" target="_blank">Click Me! Link to first iteration</a>
+       <p></p>
+      <p style = color:white>
+      At first my code tracked the water in the bottle and responded according to what the readings gave back. For example, if the water level increased by
+      50 mL it would could as the person refilling the water bottle, and if the water level decreased by 50 mL it would mean that the person drank a certain
+      amount of water and it would keep track of that. The reason there must be a minimal threshold of 50 mL is because the capacitance sensor is very
+      prone to jumping around a small amount and I did not want the code to include in the total water drank. The code was also able to print a message to 
+      remind the user to drink water after a certain amount of time that the water level did not change atleast 50 mL.
+      </p>
+      <h3>Second(Final) Iteration</h3>
+       <img src = "./Assets/Water_website.png">
+      <p style = color:white>
+      The upgraded code now is able to host a website to show the drinking progress and other features. The code starts with connecting the ESP32 microcontroler to the makerspace wifi and printing the adress to the website. Then the website is hosted with the specifications that are written in the 
+      code. Then the ESP32 reads the capacitive sensor using the same code as the first iteration and the project done in week 6. Then the readings are averaged
+      over a time period of 5 seconds to reduce the swining of numbers and also makes it easier to read and troubleshoot. The website then asks for calibration
+      values, which are minimum values and maximum values with the minimum value being when the water bottle is taken out and the maximum value is when the 
+      water bottle is full and inside the case. The reading is then convereted to milliliters and limited to not be less than 0 and more than 500 milliliters.
+      Then readings are smoothed to reduced the swining of number as the new value is only affects the result 25% with 75% being based on the last number
+      using the code: filteredWater = 0.25 * newWater + 0.75 * filteredWater; The code then sets the starting water level to become the reference that
+      will be compared with future readings to detect if water has been drunk. The code detects if water has been drunk by subtracting the reference water 
+      level that was set up in the last step with the current water level and if that number is greater than 50 mL the difference is counted as the water drunk
+      and the code records that number, adding it to the previous total amount of water drunk. 
+      </p>
 
       <p></p>
     </section>

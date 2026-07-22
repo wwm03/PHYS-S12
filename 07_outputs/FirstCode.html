@@ -1,0 +1,147 @@
+<link rel="stylesheet" href="../style.css">
+
+<pre><code style = "color:rgb(255, 255, 255);">
+long result;
+int analog_pin = A0;
+int tx_pin = D3;
+
+float water;
+
+// Variables for tracking
+float maxWater = 0;
+float totalDrank = 0;
+
+const float DRINK_THRESHOLD = 50;     // mL
+const float REFILL_THRESHOLD = 50.0;  // mL
+
+bool initialized = false;
+
+unsigned long lastDrinkTime = 0;
+const unsigned long REMINDER_TIME = 3600000UL;  // 1 hour
+
+long tx_rx();
+
+void setup() {
+  pinMode(tx_pin, OUTPUT);
+  Serial.begin(9600);
+}
+
+void loop() {
+
+  unsigned long startTime = millis();
+
+  long total = 0;
+  long count = 0;
+
+  // Average readings over 5 seconds
+  while (millis() - startTime < 5000) {
+    total += tx_rx();
+    count++;
+  }
+
+  long average = total / count;
+
+  // Convert capacitance to water level
+  water = 0.00231885 * average - 260.09578;
+
+  // Empty bottle correction
+  if (average <= 77000)
+    water = 0;
+
+  // Clamp values
+  if (water < 0)
+    water = 0;
+
+  if (water > 500)
+    water = 500;
+
+  Serial.print("Average Reading: ");
+  Serial.println(average);
+
+  Serial.print("Water Level: ");
+  Serial.print(water);
+  Serial.println(" mL");
+
+  // First reading
+  if (!initialized) {
+
+    maxWater = water;
+    lastDrinkTime = millis();
+    initialized = true;
+
+  } else {
+
+    // Bottle refilled
+    if (water > maxWater + REFILL_THRESHOLD) {
+
+      Serial.println("Bottle refilled!");
+
+      maxWater = water;
+    }
+
+    // User drank water
+    else if (maxWater - water >= DRINK_THRESHOLD) {
+
+      float drank = maxWater - water;
+
+      totalDrank += drank;
+
+      Serial.println("-------------------------");
+      Serial.print("Nice job! You drank ");
+      Serial.print(drank);
+      Serial.println(" mL!");
+
+      Serial.print("Total consumed: ");
+      Serial.print(totalDrank);
+      Serial.println(" mL");
+      Serial.println("-------------------------");
+
+      lastDrinkTime = millis();
+
+      // Reset reference after drink
+      maxWater = water;
+    }
+  }
+
+  // Reminder every hour without drinking
+  if (millis() - lastDrinkTime >= REMINDER_TIME) {
+
+    Serial.println();
+    Serial.println("💧 Reminder: It's been an hour!");
+    Serial.println("Take a sip and stay hydrated!");
+    Serial.println();
+
+    // Reset timer so it reminds again in another hour
+    lastDrinkTime = millis();
+  }
+}
+
+//-------------------------------------------------------------
+
+long tx_rx() {
+
+  int read_high;
+  int read_low;
+  int diff;
+  long sum = 0;
+
+  const int N_samples = 100;
+
+  for (int i = 0; i < N_samples; i++) {
+
+    digitalWrite(tx_pin, HIGH);
+    read_high = analogRead(analog_pin);
+
+    delayMicroseconds(100);
+
+    digitalWrite(tx_pin, LOW);
+    read_low = analogRead(analog_pin);
+
+    diff = read_high - read_low;
+
+    sum += diff;
+  }
+
+  return sum;
+}
+</code></pre>
