@@ -150,7 +150,10 @@ long tx_rx() {  // Function to execute rx_tx algorithm and return a value
       using the code: filteredWater = 0.25 * newWater + 0.75 * filteredWater; The code then sets the starting water level to become the reference that
       will be compared with future readings to detect if water has been drunk. The code detects if water has been drunk by subtracting the reference water 
       level that was set up in the last step with the current water level and if that number is greater than 50 mL the difference is counted as the water drunk
-      and the code records that number, adding it to the previous total amount of water drunk. 
+      and the code records that number, adding it to the previous total amount of water drunk. The code also dectects refilling (if the water level increases by 50 mL) then activates the code that will set the reference water level to the water level after the refill. The website then requests data to 
+      update the website, the ESP32 responds with the data, examples include the total water drunk, current water level, raw capacitance reading, amount of last drink, the number of drinks today, and how long until the next reminder. Then the percentage bar for the goal of water drunk is calculated.
+      The website also has a reminder timer that can measure the amount of time after your last drink and will send a message to remind you to drink water.
+      
       </p>
 
       <p></p>
