@@ -1,0 +1,229 @@
+<link rel="stylesheet" href="../style.css">
+
+<pre><code style = "color:rgb(255, 255, 255);">
+#include <WiFi.h>
+#include <esp_now.h>
+
+typedef struct {
+  char message[80];
+} datas;
+
+datas data;
+int LED = D0;
+int shortTime = 300;
+int longTime = 900;
+int space = 1800;
+String Inputword = "";
+
+uint8_t morseControllerMAC[] = { 0x3C, 0xDC, 0x75, 0xB0, 0x75, 0x2C };
+void ToMorseCode(char code) {
+  if (code == 'A' || code == 'a') {
+    switchLED(shortTime);
+    switchLED(longTime);
+    delay(longTime);
+
+  } else if (code == 'B' || code == 'b') {
+    switchLED(longTime);
+    switchLED(shortTime);
+    switchLED(shortTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'C' || code == 'c') {
+    switchLED(longTime);
+    switchLED(shortTime);
+    switchLED(longTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'D' || code == 'd') {
+    switchLED(longTime);
+    switchLED(shortTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'E' || code == 'e') {
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'F' || code == 'f') {
+    switchLED(shortTime);
+    switchLED(shortTime);
+    switchLED(longTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'G' || code == 'g') {
+    switchLED(longTime);
+    switchLED(longTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'H' || code == 'h') {
+    switchLED(shortTime);
+    switchLED(shortTime);
+    switchLED(shortTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'I' || code == 'i') {
+    switchLED(shortTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'J' || code == 'j') {
+    switchLED(shortTime);
+    switchLED(longTime);
+    switchLED(longTime);
+    switchLED(longTime);
+    delay(longTime);
+
+  } else if (code == 'K' || code == 'k') {
+    switchLED(longTime);
+    switchLED(shortTime);
+    switchLED(longTime);
+    delay(longTime);
+
+  } else if (code == 'L' || code == 'l') {
+    switchLED(shortTime);
+    switchLED(longTime);
+    switchLED(shortTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'M' || code == 'm') {
+    switchLED(longTime);
+    switchLED(longTime);
+    delay(longTime);
+
+  } else if (code == 'N' || code == 'n') {
+    switchLED(longTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'O' || code == 'o') {
+    switchLED(longTime);
+    switchLED(longTime);
+    switchLED(longTime);
+    delay(longTime);
+
+  } else if (code == 'P' || code == 'p') {
+    switchLED(shortTime);
+    switchLED(longTime);
+    switchLED(longTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'Q' || code == 'q') {
+    switchLED(longTime);
+    switchLED(longTime);
+    switchLED(shortTime);
+    switchLED(longTime);
+    delay(longTime);
+
+  } else if (code == 'R' || code == 'r') {
+    switchLED(shortTime);
+    switchLED(longTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'S' || code == 's') {
+    switchLED(shortTime);
+    switchLED(shortTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == 'T' || code == 't') {
+    switchLED(longTime);
+    delay(longTime);
+
+  } else if (code == 'U' || code == 'u') {
+    switchLED(shortTime);
+    switchLED(shortTime);
+    switchLED(longTime);
+    delay(longTime);
+
+  } else if (code == 'V' || code == 'v') {
+    switchLED(shortTime);
+    switchLED(shortTime);
+    switchLED(shortTime);
+    switchLED(longTime);
+    delay(longTime);
+
+  } else if (code == 'W' || code == 'w') {
+    switchLED(shortTime);
+    switchLED(longTime);
+    switchLED(longTime);
+    delay(longTime);
+
+  } else if (code == 'X' || code == 'x') {
+    switchLED(longTime);
+    switchLED(shortTime);
+    switchLED(shortTime);
+    switchLED(longTime);
+    delay(longTime);
+
+  } else if (code == 'Y' || code == 'y') {
+    switchLED(longTime);
+    switchLED(shortTime);
+    switchLED(longTime);
+    switchLED(longTime);
+    delay(longTime);
+
+  } else if (code == 'Z' || code == 'z') {
+    switchLED(longTime);
+    switchLED(longTime);
+    switchLED(shortTime);
+    switchLED(shortTime);
+    delay(longTime);
+
+  } else if (code == ' ') {
+    delay(space);
+  }
+}
+
+void onDataRecv(const esp_now_recv_info *info, const uint8_t *incomingData, int len) {
+  memcpy(
+    &data,
+    incomingData,
+    sizeof(data));
+  for (int i = 0; data.message[i] != '\0'; i++) {
+    ToMorseCode(data.message[i]);
+  }
+  String text = "OK";
+  strcpy(data.message, text.c_str());
+  esp_now_send(morseControllerMAC,(uint8_t*)&data, sizeof(data));
+}
+
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(LED, OUTPUT);
+  Serial.begin(9600);  // Start communication at 9600 baud
+
+  WiFi.mode(WIFI_STA);
+  if (esp_now_init() != ESP_OK) {
+    return;
+  }
+
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, morseControllerMAC, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+  esp_now_add_peer(&peerInfo);
+  // put your setup code here, to run once:
+  esp_now_register_recv_cb(onDataRecv);
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+}
+
+void switchLED(int timing) {
+  digitalWrite(LED, HIGH);
+  delay(timing);
+  digitalWrite(LED, LOW);
+  delay(shortTime);
+}
+</code></pre>
