@@ -1,0 +1,304 @@
+/*
+Code updated by Bobby McCarthy 4/19/2026
+Intended for Xiao Esp32c3
+
+Using Libraries: 
+- Async TCP 3.4.10 https://github.com/ESP32Async/AsyncTCP
+- ESP Async WebServer 3.10.3 https://github.com/ESP32Async/ESPAsyncWebServer
+- AccelStepper 1.64 https://www.airspayce.com/mikem/arduino/AccelStepper/
+- ESP32Servo 3.13 https://github.com/madhephaestus/ESP32Servo
+
+How To Use:
+  - Connect to esp-captive under wifi networks on your laptop
+  - Then go to 192.168.4.1 in your browser
+*/
+
+
+#include <AsyncTCP.h>
+#include <WiFi.h>
+
+#include <ESPAsyncWebServer.h>
+#include "html.h"
+
+#include <AccelStepper.h>
+#include <ESP32Servo.h>
+
+#define NUM_TOOLS 4
+
+const int xLimit = D10;
+const int yLimit = D9;
+
+const int stepPinX = D7;
+const int dirPinX = D8;
+const int stepPinY = D6;
+const int dirPinY = D5;
+float pulleyDiamX = 12.22; //was 12.22
+float pulleyDiamY = 12.22; //was 12.22
+const int xMicrosteps = 16;
+const int yMicrosteps = 16;
+const int stepsPerRev = 200;
+
+const float xMmtoSteps = (xMicrosteps*stepsPerRev)/(pulleyDiamX*PI);
+const float yMmtoSteps = (yMicrosteps*stepsPerRev)/(pulleyDiamY*PI);
+
+const int servoPin = D4;
+const int SERVO_DOWN[NUM_TOOLS] = {90,90,90,90};
+const int SERVO_UP = 170;
+const int SERVO_CHANGE = 170;
+const int TOOLS_Y = 222; //in mm, the y value for where the tool head needs to go to pick up tools
+const int PARK_Y = 180; //in mm, the y value for where the tool head needs to go before it goes to pick up the tools, so its aligned to the slots
+const int TOOLS_START_X[NUM_TOOLS] = {45,137,229,322}; //in mm, the x value the toolhead needs to go to to get to the starting position for pickup
+const int TOOL_WIDTH = 40; //the number of mm the x axis needs to move to pick up a tool
+
+const int UNDOCKED = 0;
+const int STAGED = 1;
+const int PARK = 2;
+const int DOCKED = 3;
+
+volatile bool isHoming = false;
+volatile int toolDockingState = UNDOCKED;
+
+AccelStepper stepperX(AccelStepper::DRIVER, stepPinX, dirPinX);
+AccelStepper stepperY(AccelStepper::DRIVER, stepPinY, dirPinY);
+
+static AsyncWebServer server(80);
+
+// create an easy-to-use handler
+static AsyncWebSocketMessageHandler wsHandler;
+
+// add it to the websocket server
+static AsyncWebSocket ws("/ws", wsHandler.eventHandler());
+
+Servo servo;
+
+//volatile int changeXPos = 0;
+//volatile int changeYPos = 0;
+
+volatile int servoPos = SERVO_UP;
+volatile bool updateServo = true;
+int servoActualPos = SERVO_UP; //where the servo actually is; only touched from loop()
+
+volatile int currentTool = -1; //-1 for no tool, 0-NUMTOOLS-1 for the tools
+volatile int selectedTool = -1; //tool the system wants to change to
+
+void moveSteppers(int targetXPos, int targetYPos){
+  long targetXPosSteps = targetXPos * xMmtoSteps;
+  long targetYPosSteps = targetYPos * yMmtoSteps;
+
+  Serial.printf("targetXPosSteps %ld, targetYPosSteps: %ld\n", targetXPosSteps, targetYPosSteps);
+
+  unsigned long distanceX = abs(targetXPosSteps - stepperX.currentPosition());
+  unsigned long distanceY = abs(targetYPosSteps - stepperY.currentPosition());
+
+  //scale the slower axis so both finish together. only meaningful when both axes move:
+  //a zero distance gives a 0/inf/NaN ratio, and setMaxSpeed(0) leaves that axis unable to
+  //step at all (setSpeed clamps to maxSpeed) until the next move recomputes it.
+  float speedX = 1000, speedY = 1000;
+  float accelX = 1000, accelY = 1000;
+  if(distanceX > 0 && distanceY > 0){
+    float distRatio = distanceX/((float)distanceY);
+    if(distRatio > 1){
+      speedY = 1000/distRatio;
+      accelY = 1000/distRatio;
+    } else {
+      speedX = 1000*distRatio;
+      accelX = 1000*distRatio;
+    }
+  }
+  stepperX.setMaxSpeed(max(speedX, 1.0f));
+  stepperX.setAcceleration(max(accelX, 1.0f));
+  stepperY.setMaxSpeed(max(speedY, 1.0f));
+  stepperY.setAcceleration(max(accelY, 1.0f));
+
+  stepperX.moveTo(targetXPosSteps);
+  stepperY.moveTo(targetYPosSteps);
+}
+bool isMoving(){
+  return (stepperX.distanceToGo()!=0 || stepperY.distanceToGo()!=0);
+}
+
+void changeTool(int toolNum){
+  if(toolNum<-1 || toolNum>=NUM_TOOLS){return;}
+  if(toolNum == currentTool){return;}
+  //then update selectedTool, lift servo
+  selectedTool = toolNum;
+  servoPos = SERVO_UP;
+  updateServo = true;
+}
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP("Draw1234");
+  pinMode(xLimit, INPUT_PULLUP);
+  pinMode(yLimit, INPUT_PULLUP);
+  pinMode(stepPinX, OUTPUT);
+  pinMode(dirPinX, OUTPUT);
+  pinMode(stepPinY, OUTPUT);
+  pinMode(dirPinY, OUTPUT);
+
+  digitalWrite(stepPinX, LOW);
+  digitalWrite(stepPinY, LOW);
+  digitalWrite(dirPinY, LOW);
+  digitalWrite(dirPinX, LOW);
+  stepperX.setAcceleration(10000);
+  stepperX.setMaxSpeed(20000);
+  stepperY.setAcceleration(10000);
+  stepperY.setMaxSpeed(20000);
+  stepperY.setPinsInverted(true, false, false); //reverse stepperY direction
+
+  servo.setPeriodHertz(50);    // standard 50 hz servo
+	servo.attach(servoPin, 1000, 2000);
+  // stepperX.moveTo(3200);
+  // stepperY.moveTo(100);
+
+  // serves root html page
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/html", (const uint8_t *)htmlContent, sizeof(htmlContent)/ sizeof(htmlContent[0]));
+  });
+
+  wsHandler.onConnect([](AsyncWebSocket *server, AsyncWebSocketClient *client) {
+    Serial.printf("Client %" PRIu32 " connected\n", client->id());
+    server->textAll("New client: " + String(client->id()));
+  });
+
+  wsHandler.onDisconnect([](AsyncWebSocket *server, uint32_t clientId) {
+    Serial.printf("Client %" PRIu32 " disconnected\n", clientId);
+    server->textAll("Client " + String(clientId) + " disconnected");
+  });
+
+  wsHandler.onError([](AsyncWebSocket *server, AsyncWebSocketClient *client, uint16_t errorCode, const char *reason, size_t len) {
+    Serial.printf("Client %" PRIu32 " error: %" PRIu16 ": %s\n", client->id(), errorCode, reason);
+  });
+  //data comes in the format of xPos,yPos
+  wsHandler.onMessage([](AsyncWebSocket *server, AsyncWebSocketClient *client, const uint8_t *data, size_t len) {
+    Serial.printf("Client %" PRIu32 " data: %s\n", client->id(), (const char *)data);
+    bool isFirstNum = true;
+    int targetXPos = 0;
+    int targetYPos = 0;
+
+    if(len == 1){
+      switch((char)data[0]){
+        case('u'):
+          servoPos = SERVO_UP;
+          updateServo = true;
+        break;
+        case('d'):
+          if(currentTool >= 0){
+            servoPos = SERVO_DOWN[currentTool];
+          } else{servoPos = SERVO_UP;}
+          updateServo = true;
+        break;
+        case('h'):
+          isHoming = true;
+        default:
+        break;
+      }
+      return;
+    }
+
+    //tool change comes in the format of t<toolNum>, or tn to drop the current tool
+    if(len == 2 && data[0] == 't'){
+      if(data[1] == 'n'){
+        changeTool(-1);
+      } else if(data[1] >= '0' && data[1] < '0' + NUM_TOOLS){
+        changeTool(data[1] - '0');
+      }
+      return;
+    }
+
+    for(int i = 0; i < len; i++){
+      if (data[i] == ','){
+        isFirstNum = false;
+        continue;
+      }
+      if(isFirstNum){
+        targetXPos = targetXPos * 10 + (data[i] - '0');
+      }
+      else{
+        targetYPos = targetYPos * 10 + (data[i] - '0');
+      }
+    }
+    moveSteppers(targetXPos, targetYPos);
+  });
+
+  wsHandler.onFragment([](AsyncWebSocket *server, AsyncWebSocketClient *client, const AwsFrameInfo *frameInfo, const uint8_t *data, size_t len) {
+    Serial.printf("Client %" PRIu32 " fragment %" PRIu32 ": %s\n", client->id(), frameInfo->num, (const char *)data);
+  });
+
+  server.addHandler(&ws);
+  server.begin();
+}
+
+void loop() {
+  //service the servo first, so a requested lift finishes before the tool state
+  //machine below issues its next move
+  if(updateServo){
+    Serial.println("updating servo");
+    Serial.println(servoPos);
+    updateServo = false; //clear before the sweep: it blocks for ~400ms, and a command
+                         //arriving during it must not be swallowed by a trailing clear
+    int endPos = servoPos;
+    int increment = endPos > servoActualPos ? 1 : -1;
+    for(int i = servoActualPos; i != endPos; i += increment){
+      servo.write(i);
+      delay(5); //intentionally blocking so the lift is perfectly vertical
+    }
+    servo.write(endPos); //commit the final angle; the loop above stops one short
+    servoActualPos = endPos;
+  }
+
+  if(isHoming){
+    //setSpeed clamps to maxSpeed, so raise it first or a leftover slow/zero maxSpeed
+    //from the previous move will silently keep this axis from homing
+    stepperX.setMaxSpeed(2000);
+    stepperY.setMaxSpeed(2000);
+    stepperX.setSpeed(-600);
+    stepperY.setSpeed(-600);
+    while((digitalRead(xLimit) == 1 || digitalRead(yLimit) == 1)){
+      if(digitalRead(xLimit) == 1){
+        stepperX.runSpeed();
+      }
+      if(digitalRead(yLimit) == 1){
+        stepperY.runSpeed();
+      }
+    }
+    stepperX.setCurrentPosition(0);
+    stepperY.setCurrentPosition(0);
+    isHoming = false;
+  } else if(currentTool != selectedTool){
+    //logic flow, dock current tool, then select new tool
+    if(currentTool >= 0 && !isMoving()){
+      if(toolDockingState == UNDOCKED){
+        moveSteppers(TOOLS_START_X[currentTool]+TOOL_WIDTH, PARK_Y);
+        toolDockingState = STAGED;
+      } else if(toolDockingState == STAGED){
+        moveSteppers(TOOLS_START_X[currentTool]+TOOL_WIDTH, TOOLS_Y);
+        toolDockingState = DOCKED;
+      } else if(toolDockingState == DOCKED){
+        moveSteppers(TOOLS_START_X[currentTool], TOOLS_Y);
+        toolDockingState = UNDOCKED;
+        currentTool = -1; //currently no tool selected
+      }
+    } else if(!isMoving()){
+      if(toolDockingState == UNDOCKED){
+        moveSteppers(TOOLS_START_X[selectedTool], PARK_Y);
+        toolDockingState = PARK;
+      } else if(toolDockingState == PARK){
+        moveSteppers(TOOLS_START_X[selectedTool], TOOLS_Y);
+        toolDockingState = STAGED;
+      } else if(toolDockingState == STAGED){
+        moveSteppers(TOOLS_START_X[selectedTool]+TOOL_WIDTH, TOOLS_Y);
+        toolDockingState = DOCKED;
+      } else if(toolDockingState == DOCKED){
+        moveSteppers(TOOLS_START_X[selectedTool]+TOOL_WIDTH, PARK_Y);
+        toolDockingState = UNDOCKED;
+        currentTool = selectedTool; //select changed tool
+      }
+    }
+  }
+  
+
+  stepperX.run();
+  stepperY.run();
+}
