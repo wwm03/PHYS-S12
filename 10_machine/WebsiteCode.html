@@ -2,12 +2,12 @@
 
 <pre><code style = "color:rgb(255, 255, 255);">
 static const char htmlContent[] PROGMEM = R"HTML(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Draggable Circle Canvas</title>
-  <style>
+&lt;!DOCTYPE html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+  &lt;meta charset="UTF-8"&gt;
+  &lt;title&gt;Draggable Circle Canvas&lt;/title&gt;
+  &lt;style&gt;
     body {
       margin: 0;
       display: flex;
@@ -20,28 +20,28 @@ static const char htmlContent[] PROGMEM = R"HTML(
       border: 2px solid #333;
       background: #fff;
     }
-  </style>
-</head>
-<body>
+  &lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
 
-<canvas id="canvas" width="475" height="400"></canvas>
-<div style="margin: 10px; padding: 10px">
-  <p id="xPos">pos x: 100</p>   
-  <p id="yPos">pos y: 200</p>
-  <button id="submit" onclick="sendMessage('p')">go to</button>
-  <button id="home" onclick="sendMessage('h')">home</button>
-  <button id="servo_up" onclick="sendMessage('u')">servo up</button>
-  <button id="servo_down" onclick="sendMessage('d')">servo down</button>
-</div>
-<div style="margin: 10px; padding: 10px">
-  <button id="tool0" onclick="sendMessage('t', 0)">tool 1</button>
-  <button id="tool1" onclick="sendMessage('t', 1)">tool 2</button>
-  <button id="tool2" onclick="sendMessage('t', 2)">tool 3</button>
-  <button id="tool3" onclick="sendMessage('t', 3)">tool 4</button>
-  <button id="toolNone" onclick="sendMessage('t', 'n')">drop tool</button>
-</div>
+&lt;canvas id="canvas" width="475" height="400"&gt;&lt;/canvas&gt;
+&lt;div style="margin: 10px; padding: 10px"&gt;
+  &lt;p id="xPos"&gt;pos x: 100&lt;/p&gt;   
+  &lt;p id="yPos"&gt;pos y: 200&lt;/p&gt;
+  &lt;button id="submit" onclick="sendMessage('p')"&gt;go to&lt;/button&gt;
+  &lt;button id="home" onclick="sendMessage('h')"&gt;home&lt;/button&gt;
+  &lt;button id="servo_up" onclick="sendMessage('u')"&gt;servo up&lt;/button&gt;
+  &lt;button id="servo_down" onclick="sendMessage('d')"&gt;servo down&lt;/button&gt;
+&lt;/div&gt;
+&lt;div style="margin: 10px; padding: 10px"&gt;
+  &lt;button id="tool0" onclick="sendMessage('t', 0)"&gt;tool 1&lt;/button&gt;
+  &lt;button id="tool1" onclick="sendMessage('t', 1)"&gt;tool 2&lt;/button&gt;
+  &lt;button id="tool2" onclick="sendMessage('t', 2)"&gt;tool 3&lt;/button&gt;
+  &lt;button id="tool3" onclick="sendMessage('t', 3)"&gt;tool 4&lt;/button&gt;
+  &lt;button id="toolNone" onclick="sendMessage('t', 'n')"&gt;drop tool&lt;/button&gt;
+&lt;/div&gt;
 
-<script>
+&lt;script&gt;
   const canvas = document.getElementById("canvas");
   const ctx = canvas.getContext("2d");
   const xPos = document.getElementById("xPos");
@@ -91,10 +91,10 @@ static const char htmlContent[] PROGMEM = R"HTML(
   function isMouseInCircle(mx, my) {
     const dx = mx - circle.x;
     const dy = my - circle.y;
-    return Math.sqrt(dx * dx + dy * dy) <= circle.radius;
+    return Math.sqrt(dx * dx + dy * dy) &lt;= circle.radius;
   }
 
-  canvas.addEventListener("mousedown", (e) => {
+  canvas.addEventListener("mousedown", (e) =&gt; {
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
@@ -104,7 +104,7 @@ static const char htmlContent[] PROGMEM = R"HTML(
     }
   });
 
-  canvas.addEventListener("mousemove", (e) => {
+  canvas.addEventListener("mousemove", (e) =&gt; {
     if (!circle.dragging) return;
 
     const rect = canvas.getBoundingClientRect();
@@ -120,16 +120,16 @@ static const char htmlContent[] PROGMEM = R"HTML(
     draw();
   });
 
-  canvas.addEventListener("mouseup", () => circle.dragging = false);
-  canvas.addEventListener("mouseleave", () => circle.dragging = false);
+  canvas.addEventListener("mouseup", () =&gt; circle.dragging = false);
+  canvas.addEventListener("mouseleave", () =&gt; circle.dragging = false);
 
   draw();
 
   var ws = new WebSocket('ws://192.168.4.1/ws');
-  ws.onopen = () => console.log("WebSocket connected");
-  ws.onmessage = e => console.log("WebSocket message: " + e.data);
-  ws.onclose = () => console.log("WebSocket closed");
-  ws.onerror = e => console.log("WebSocket error: " + e);
+  ws.onopen = () =&gt; console.log("WebSocket connected");
+  ws.onmessage = e =&gt; console.log("WebSocket message: " + e.data);
+  ws.onclose = () =&gt; console.log("WebSocket closed");
+  ws.onerror = e =&gt; console.log("WebSocket error: " + e);
 
   function sendMessage(messageType, toolNum) {
     if (messageType === 'p') {
@@ -140,10 +140,10 @@ static const char htmlContent[] PROGMEM = R"HTML(
       ws.send(messageType);
     }
   }
-</script>
+&lt;/script&gt;
 
-</body>
-</html>
+&lt;/body&gt;
+&lt;/html&gt;
 )HTML";
 
 </code></pre>
