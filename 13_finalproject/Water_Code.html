@@ -1,50 +1,19 @@
 <link rel="stylesheet" href="../style.css">
 
 <pre><code style = "color:rgb(255, 255, 255);">
-/*
-  Smart Water Bottle - 3 capacitance levels + HX711 load cell
-  Board: Seeed Studio XIAO ESP32C3
-
-  Only required Arduino library:
-    HX711 by Rob Tillaart
-
-  The CapacitiveSensor class below is part of this sketch.
-  It is not an installed library.
-
-  Capacitive sensors (receiver, transmitter):
-    Level 3: D0, D3
-    Level 2: D1, D4
-    Level 1: D2, D5
-
-  HX711:
-    DT  -> D9
-    SCK -> D10
-
-  Serial Monitor: 115200 baud
-*/
-
 #include <WiFi.h>
 #include <WebServer.h>
 #include "HX711.h"
 
-// ============================================================
-// WI-FI
-// ============================================================
-
 const char* WIFI_NAME = "MAKERSPACE";
 const char* WIFI_PASSWORD = "12345678";
 
-// If that network is unavailable, the XIAO creates this network.
 const char* AP_NAME = "SmartWaterBottle";
 const char* AP_PASSWORD = "drinkwater";
 
 bool usingBackupHotspot = false;
 unsigned long lastLinkPrintAt = 0;
 const unsigned long LINK_PRINT_INTERVAL = 60000UL;
-
-// ============================================================
-// PROJECT SETTINGS
-// ============================================================
 
 const float DAILY_GOAL_ML = 3000.0f;
 const float DRINK_THRESHOLD_ML = 50.0f;
@@ -55,24 +24,14 @@ const unsigned long FIRM_REFRESH_INTERVAL = 10000UL;
 const float FIRM_REFRESH_NOISE_ML = 2.0f;
 const unsigned long REMINDER_TIME = 3600000UL; // One hour
 
-// Fixed load-cell calibration supplied from testing.
 const long LOAD_EMPTY_RAW = 17000;
 const long LOAD_FULL_RAW = 53650;
 const float LOAD_EMPTY_ML = 0.0f;
 const float LOAD_FULL_ML = 516.0f;
 const long LOAD_ENDPOINT_TOLERANCE = 1000;
 
-// Load-cell bands used to cross-check the capacitance level.
-// Cap level 0: Level 1 is dry.
-// Cap level 1: Level 1 is wet, Level 2 is dry.
-// Cap level 2: Levels 1 and 2 are wet, Level 3 is dry.
-// Cap level 3: All three levels are wet.
 const long LOAD_BAND_MIN[4] = {14000, 19000, 28001, 34001};
 const long LOAD_BAND_MAX[4] = {18999, 28000, 34000, 53650};
-
-// ============================================================
-// CAPACITIVE SENSOR CLASS
-// ============================================================
 
 enum MoistureState : int8_t {
   MOISTURE_UNKNOWN = -1,
@@ -118,7 +77,6 @@ class CapacitiveSensor {
   }
 };
 
-// Exact class and pin pairs used in the earlier sensor test:
 CapacitiveSensor sensor3(D0, D3);
 CapacitiveSensor sensor2(D1, D4);
 CapacitiveSensor sensor1(D2, D5);
@@ -129,8 +87,6 @@ CapacitiveSensor* levelSensors[3] = {
   &sensor3
 };
 
-// Dry calibration is captured from the webpage at every startup.
-// Each level has its own wet offset above the captured dry reading.
 const long CAP_WET_OFFSET[3] = {2000, 7000, 10000};
 const long CAP_LOAD_ASSIST_TOLERANCE = 1000;
 long capDryBaseline[3] = {0, 0, 0};
@@ -138,18 +94,10 @@ long capWetThreshold[3] = {0, 0, 0};
 bool capDryCalibrated = false;
 bool sensorAverageReady = false;
 
-// ============================================================
-// HX711 LOAD CELL
-// ============================================================
-
 const int HX711_DT = D9;
 const int HX711_SCK = D10;
 
 HX711 loadCell;
-
-// ============================================================
-// LIVE SENSOR VALUES
-// ============================================================
 
 long capRaw[3] = {0, 0, 0};
 MoistureState capState[3] = {
@@ -163,14 +111,9 @@ long loadRaw = 0;
 float loadMl = 0.0f;
 bool loadCellReady = false;
 
-// 0 = below level 1, 1 = level 1, 2 = level 2, 3 = level 3
 int capLevel = -1;
 int loadBand = -1;
 bool sensorsAgree = false;
-
-// ============================================================
-// TRACKING
-// ============================================================
 
 float acceptedWater = 0.0f;
 float filteredWater = 0.0f;
@@ -184,8 +127,6 @@ bool filterStarted = false;
 bool trackingStarted = false;
 unsigned long lastDrinkTime = 0;
 
-// When a possible drink is detected, keep the original water level and wait
-// for one new five-second sensor window before accepting the new level.
 bool drinkSettling = false;
 unsigned long drinkSettleStartedAt = 0;
 float waterBeforePossibleDrink = 0.0f;
@@ -194,10 +135,6 @@ uint8_t fastDropSampleCount = 0;
 unsigned long lastFirmRefreshAt = 0;
 
 String lastEvent = "Waiting for verified sensor data";
-
-// ============================================================
-// NON-BLOCKING FIVE-SECOND AVERAGING
-// ============================================================
 
 const unsigned long CAP_SAMPLE_INTERVAL = 100UL;
 const unsigned long AVERAGE_WINDOW = 5000UL;
@@ -210,10 +147,6 @@ uint32_t capSampleCount = 0;
 
 int64_t loadTotal = 0;
 uint32_t loadSampleCount = 0;
-
-// ============================================================
-// WEB SERVER
-// ============================================================
 
 WebServer server(80);
 
@@ -579,10 +512,6 @@ setInterval(update,3000);
 </html>
 )HTML";
 
-// ============================================================
-// SENSOR INTERPRETATION
-// ============================================================
-
 float loadRawToMl(long raw) {
   float ml = LOAD_EMPTY_ML +
     (float)(raw - LOAD_EMPTY_RAW) *
@@ -601,10 +530,6 @@ MoistureState classifyCapValue(int level, long value) {
   MoistureState normalState = value < capWetThreshold[level]
     ? MOISTURE_DRY
     : MOISTURE_WET;
-
-  // Cap level N should be wet whenever the load-cell band is above N.
-  // Only let the load cell override a capacitance decision when the raw
-  // capacitance value is within ±1,000 of its calibrated wet threshold.
   if (
     loadBand >= 0 &&
     value >= capWetThreshold[level] - CAP_LOAD_ASSIST_TOLERANCE &&
@@ -622,7 +547,7 @@ MoistureState classifyCapValue(int level, long value) {
 }
 
 int determineCapLevel() {
-  // Sequential rule: only consult a higher sensor after the lower one is wet.
+
   if (capState[0] == MOISTURE_UNKNOWN) return -1;
   if (capState[0] == MOISTURE_DRY) return 0;
 
@@ -696,10 +621,6 @@ String expectedRangeName(int level) {
   return String(minimum) + "–" + String(maximum);
 }
 
-// ============================================================
-// WATER TRACKING
-// ============================================================
-
 void saveFirmWater(float waterMl) {
   lastFirmWater = waterMl;
   referenceWater = waterMl;
@@ -717,9 +638,6 @@ void refreshFirmWaterIfDue() {
     return;
   }
 
-  // Refresh from the latest verified five-second average when the water has
-  // stayed level or increased. Allow only 2 mL of downward sensor noise; a
-  // larger decrease keeps the old checkpoint so unrecorded water is not lost.
   if (acceptedWater + FIRM_REFRESH_NOISE_ML >= lastFirmWater) {
     saveFirmWater(acceptedWater);
   }
@@ -751,7 +669,7 @@ void startOrResetBaseline(const String& message) {
 }
 
 void processWaterTracking() {
-  // This function is only called after the capacitance/load-cell cross-check.
+
   if (!trackingStarted) {
     saveFirmWater(acceptedWater);
     lastDrinkTime = millis();
@@ -767,17 +685,11 @@ void processWaterTracking() {
     lastEvent = "Refill detected: +" + String(change, 0) + " mL";
     return;
   }
-
-  // Falling levels are handled by the five-second settling state in
-  // evaluateCompletedAverages(). This prevents a partly settled value from
-  // being smoothed into the drink calculation.
 }
 
 void evaluateCompletedAverages() {
   bool sensorsPreviouslyAgreed = sensorsAgree;
 
-  // Determine the more reliable load-cell band first. The capacitance
-  // classifier can then use it only inside the ±1,000 tolerance zone.
   loadBand = loadCellReady ? determineLoadBand(loadRaw) : -1;
   loadMl = loadCellReady ? loadRawToMl(loadRaw) : 0.0f;
 
@@ -800,7 +712,6 @@ void evaluateCompletedAverages() {
     loadBand >= 0 &&
     capLevel == loadBand;
 
-  // Fallback detection in case the fast live-sample path was unavailable.
   if (
     trackingStarted &&
     firmWaterReady &&
@@ -822,8 +733,6 @@ void evaluateCompletedAverages() {
       return;
     }
 
-    // Five seconds is the minimum. If the two sensing systems still disagree,
-    // keep waiting without changing the old reference value.
     if (!sensorsAgree) {
       lastEvent = "Five-second wait complete; waiting for capacitance and load cell to agree";
       return;
@@ -832,7 +741,6 @@ void evaluateCompletedAverages() {
     float settledWater = loadMl;
     float drank = waterBeforePossibleDrink - settledWater;
 
-    // Use the final unsmoothed value so the entire removal is recorded.
     acceptedWater = settledWater;
     filteredWater = settledWater;
     filterStarted = true;
@@ -851,8 +759,6 @@ void evaluateCompletedAverages() {
       saveFirmWater(settledWater);
       lastEvent = "Refill detected during settling: +" + String(refilled, 0) + " mL";
     } else if (drank < DRINK_THRESHOLD_ML) {
-      // Keep the previous firm reading. A later drop can still include this
-      // small change instead of losing it.
       lastEvent = "Change was below 50 mL; previous firm level was kept";
     } else {
       saveFirmWater(settledWater);
@@ -891,10 +797,6 @@ void evaluateCompletedAverages() {
   refreshFirmWaterIfDue();
 }
 
-// ============================================================
-// NON-BLOCKING SENSOR UPDATE
-// ============================================================
-
 void updateSensors() {
   unsigned long now = millis();
 
@@ -907,15 +809,11 @@ void updateSensors() {
     capSampleCount++;
   }
 
-  // Read each HX711 sample only when one is ready, so the website stays fast.
   if (loadCell.is_ready()) {
     long liveLoadRaw = loadCell.read();
     loadTotal += liveLoadRaw;
     loadSampleCount++;
 
-    // Detect a real drop from live HX711 samples instead of waiting for the
-    // current five-second average to finish. Three consecutive low samples
-    // reject a one-sample spike while still reacting in well under a second.
     if (trackingStarted && firmWaterReady && !drinkSettling) {
       float liveLoadMl = loadRawToMl(liveLoadRaw);
 
@@ -930,8 +828,6 @@ void updateSensors() {
       if (fastDropSampleCount >= FAST_DROP_CONFIRM_SAMPLES) {
         beginDrinkSettling(now);
 
-        // Throw away the partly changed average and collect an entirely new
-        // five-second window after the drop was detected.
         for (int i = 0; i < 3; i++) {
           capTotals[i] = 0;
         }
@@ -1010,10 +906,6 @@ void updateSensors() {
   Serial.print(", load cell=");
   Serial.println(completedLoadSamples);
 }
-
-// ============================================================
-// WEB ROUTES
-// ============================================================
 
 void handleData() {
   float percent = totalDrank / DAILY_GOAL_ML * 100.0f;
@@ -1192,10 +1084,6 @@ void printWebsiteAddress() {
   Serial.println();
 }
 
-// ============================================================
-// SETUP / LOOP
-// ============================================================
-
 void setup() {
   Serial.begin(115200);
   delay(1200);
@@ -1250,7 +1138,6 @@ void loop() {
   server.handleClient();
   updateSensors();
 
-  // Reprint the link every minute in case the startup message was missed.
   if (millis() - lastLinkPrintAt >= LINK_PRINT_INTERVAL) {
     lastLinkPrintAt = millis();
     printWebsiteAddress();
