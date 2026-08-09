@@ -1,0 +1,1263 @@
+<link rel="stylesheet" href="../style.css">
+
+<pre><code style = "color:rgb(255, 255, 255);">
+/*
+  Smart Water Bottle - 3 capacitance levels + HX711 load cell
+  Board: Seeed Studio XIAO ESP32C3
+
+  Only required Arduino library:
+    HX711 by Rob Tillaart
+
+  The CapacitiveSensor class below is part of this sketch.
+  It is not an installed library.
+
+  Capacitive sensors (receiver, transmitter):
+    Level 3: D0, D3
+    Level 2: D1, D4
+    Level 1: D2, D5
+
+  HX711:
+    DT  -> D9
+    SCK -> D10
+
+  Serial Monitor: 115200 baud
+*/
+
+#include <WiFi.h>
+#include <WebServer.h>
+#include "HX711.h"
+
+// ============================================================
+// WI-FI
+// ============================================================
+
+const char* WIFI_NAME = "MAKERSPACE";
+const char* WIFI_PASSWORD = "12345678";
+
+// If that network is unavailable, the XIAO creates this network.
+const char* AP_NAME = "SmartWaterBottle";
+const char* AP_PASSWORD = "drinkwater";
+
+bool usingBackupHotspot = false;
+unsigned long lastLinkPrintAt = 0;
+const unsigned long LINK_PRINT_INTERVAL = 60000UL;
+
+// ============================================================
+// PROJECT SETTINGS
+// ============================================================
+
+const float DAILY_GOAL_ML = 3000.0f;
+const float DRINK_THRESHOLD_ML = 50.0f;
+const float REFILL_THRESHOLD_ML = 50.0f;
+const unsigned long DRINK_SETTLE_TIME = 5000UL;
+const uint8_t FAST_DROP_CONFIRM_SAMPLES = 3;
+const unsigned long FIRM_REFRESH_INTERVAL = 10000UL;
+const float FIRM_REFRESH_NOISE_ML = 2.0f;
+const unsigned long REMINDER_TIME = 3600000UL; // One hour
+
+// Fixed load-cell calibration supplied from testing.
+const long LOAD_EMPTY_RAW = 17000;
+const long LOAD_FULL_RAW = 53650;
+const float LOAD_EMPTY_ML = 0.0f;
+const float LOAD_FULL_ML = 516.0f;
+const long LOAD_ENDPOINT_TOLERANCE = 1000;
+
+// Load-cell bands used to cross-check the capacitance level.
+// Cap level 0: Level 1 is dry.
+// Cap level 1: Level 1 is wet, Level 2 is dry.
+// Cap level 2: Levels 1 and 2 are wet, Level 3 is dry.
+// Cap level 3: All three levels are wet.
+const long LOAD_BAND_MIN[4] = {14000, 19000, 28001, 34001};
+const long LOAD_BAND_MAX[4] = {18999, 28000, 34000, 53650};
+
+// ============================================================
+// CAPACITIVE SENSOR CLASS
+// ============================================================
+
+enum MoistureState : int8_t {
+  MOISTURE_UNKNOWN = -1,
+  MOISTURE_DRY = 0,
+  MOISTURE_WET = 1
+};
+
+class CapacitiveSensor {
+ private:
+  int analogPin;
+  int txPin;
+  int numberOfSamples;
+
+ public:
+  CapacitiveSensor(int analogPin, int txPin, int samples = 100) {
+    this->analogPin = analogPin;
+    this->txPin = txPin;
+    this->numberOfSamples = samples;
+  }
+
+  void begin() {
+    pinMode(analogPin, INPUT);
+    pinMode(txPin, OUTPUT);
+    digitalWrite(txPin, LOW);
+  }
+
+  long read() {
+    long sum = 0;
+
+    for (int i = 0; i < numberOfSamples; i++) {
+      digitalWrite(txPin, HIGH);
+      delayMicroseconds(100);
+      int readHigh = analogRead(analogPin);
+
+      digitalWrite(txPin, LOW);
+      delayMicroseconds(100);
+      int readLow = analogRead(analogPin);
+
+      sum += readHigh - readLow;
+    }
+
+    return sum;
+  }
+};
+
+// Exact class and pin pairs used in the earlier sensor test:
+CapacitiveSensor sensor3(D0, D3);
+CapacitiveSensor sensor2(D1, D4);
+CapacitiveSensor sensor1(D2, D5);
+
+CapacitiveSensor* levelSensors[3] = {
+  &sensor1,
+  &sensor2,
+  &sensor3
+};
+
+// Dry calibration is captured from the webpage at every startup.
+// Each level has its own wet offset above the captured dry reading.
+const long CAP_WET_OFFSET[3] = {2000, 7000, 10000};
+const long CAP_LOAD_ASSIST_TOLERANCE = 1000;
+long capDryBaseline[3] = {0, 0, 0};
+long capWetThreshold[3] = {0, 0, 0};
+bool capDryCalibrated = false;
+bool sensorAverageReady = false;
+
+// ============================================================
+// HX711 LOAD CELL
+// ============================================================
+
+const int HX711_DT = D9;
+const int HX711_SCK = D10;
+
+HX711 loadCell;
+
+// ============================================================
+// LIVE SENSOR VALUES
+// ============================================================
+
+long capRaw[3] = {0, 0, 0};
+MoistureState capState[3] = {
+  MOISTURE_UNKNOWN,
+  MOISTURE_UNKNOWN,
+  MOISTURE_UNKNOWN
+};
+bool capAssistedByLoad[3] = {false, false, false};
+
+long loadRaw = 0;
+float loadMl = 0.0f;
+bool loadCellReady = false;
+
+// 0 = below level 1, 1 = level 1, 2 = level 2, 3 = level 3
+int capLevel = -1;
+int loadBand = -1;
+bool sensorsAgree = false;
+
+// ============================================================
+// TRACKING
+// ============================================================
+
+float acceptedWater = 0.0f;
+float filteredWater = 0.0f;
+float referenceWater = 0.0f;
+float lastFirmWater = 0.0f;
+float totalDrank = 0.0f;
+float lastDrink = 0.0f;
+int drinksToday = 0;
+
+bool filterStarted = false;
+bool trackingStarted = false;
+unsigned long lastDrinkTime = 0;
+
+// When a possible drink is detected, keep the original water level and wait
+// for one new five-second sensor window before accepting the new level.
+bool drinkSettling = false;
+unsigned long drinkSettleStartedAt = 0;
+float waterBeforePossibleDrink = 0.0f;
+bool firmWaterReady = false;
+uint8_t fastDropSampleCount = 0;
+unsigned long lastFirmRefreshAt = 0;
+
+String lastEvent = "Waiting for verified sensor data";
+
+// ============================================================
+// NON-BLOCKING FIVE-SECOND AVERAGING
+// ============================================================
+
+const unsigned long CAP_SAMPLE_INTERVAL = 100UL;
+const unsigned long AVERAGE_WINDOW = 5000UL;
+
+unsigned long lastCapSampleAt = 0;
+unsigned long averageWindowStartedAt = 0;
+
+int64_t capTotals[3] = {0, 0, 0};
+uint32_t capSampleCount = 0;
+
+int64_t loadTotal = 0;
+uint32_t loadSampleCount = 0;
+
+// ============================================================
+// WEB SERVER
+// ============================================================
+
+WebServer server(80);
+
+const char PAGE[] PROGMEM = R"HTML(
+&lt;!doctype html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+  &lt;meta charset="utf-8"&gt;
+  &lt;meta name="viewport" content="width=device-width,initial-scale=1"&gt;
+  &lt;title&gt;Smart Water Bottle&lt;/title&gt;
+  &lt;style&gt;
+    :root{
+      --blue:#1677ff;--dark:#15324a;--muted:#6a8295;--line:#d9e7f2;
+      --soft:#f4f9fd;--green:#138a5b;--red:#c74444;--orange:#b66b09
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;padding:18px;font-family:Inter,Arial,sans-serif;color:var(--dark);
+      background:linear-gradient(145deg,#e9f7ff,#f8fbff 55%,#eaf5ff)
+    }
+    main{max-width:850px;margin:auto}
+    header{text-align:center;margin:8px 0 20px}
+    h1{margin:0;font-size:clamp(28px,6vw,42px)}
+    h2{font-size:18px;margin:0 0 14px}
+    .subtitle{color:var(--muted);margin-top:7px}
+    .panel{
+      background:#fff;border:1px solid var(--line);border-radius:20px;
+      padding:20px;margin:14px 0;box-shadow:0 10px 30px rgba(24,85,130,.07)
+    }
+    .hero{display:grid;grid-template-columns:1.2fr .8fr;gap:18px;align-items:center}
+    .total{font-size:48px;font-weight:800;line-height:1}
+    .total small{font-size:20px;color:var(--muted)}
+    .track{height:18px;background:#dfedfa;border-radius:999px;overflow:hidden;margin-top:16px}
+    .fill{height:100%;width:0;background:linear-gradient(90deg,#18a5ee,var(--blue));transition:.4s}
+    .pill{
+      display:inline-block;padding:9px 13px;border-radius:999px;font-weight:700;
+      background:#edf3f7;color:var(--muted)
+    }
+    .pill.good{background:#e5f8ef;color:var(--green)}
+    .pill.bad{background:#ffeded;color:var(--red)}
+    .pill.wait{background:#fff4df;color:var(--orange)}
+    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+    .card{padding:15px;background:var(--soft);border:1px solid var(--line);border-radius:14px}
+    .name{font-size:12px;color:var(--muted);margin-bottom:5px}
+    .value{font-size:23px;font-weight:800;word-break:break-word}
+    .small{font-size:13px;color:var(--muted);margin-top:5px}
+    table{width:100%;border-collapse:collapse;font-size:14px}
+    th,td{padding:11px 9px;text-align:left;border-bottom:1px solid var(--line)}
+    th{font-size:12px;color:var(--muted)}
+    .state{font-weight:800}
+    .wet{color:var(--green)}.dry{color:var(--blue)}.unknown{color:var(--orange)}
+    button{
+      border:0;border-radius:12px;padding:12px 15px;margin:6px 6px 0 0;
+      background:var(--blue);color:#fff;font-size:14px;font-weight:700;cursor:pointer
+    }
+    button.alt{background:#fff;color:var(--red);border:1px solid #e1aaaa}
+    button:disabled{opacity:.65;cursor:default}
+    #event{padding:12px 14px;border-radius:12px;background:var(--soft);margin-top:13px}
+    footer{text-align:center;color:var(--muted);font-size:12px;padding:12px}
+    @media(max-width:700px){
+      .hero{grid-template-columns:1fr}.grid{grid-template-columns:1fr 1fr}
+      table{font-size:12px}th,td{padding:9px 5px}.hide-mobile{display:none}
+    }
+  &lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;main&gt;
+  &lt;header&gt;
+    &lt;h1&gt;Smart Water Bottle&lt;/h1&gt;
+    &lt;div class="subtitle"&gt;Load cell tracking verified by three water-level sensors&lt;/div&gt;
+  &lt;/header&gt;
+
+  &lt;section class="panel hero"&gt;
+    &lt;div&gt;
+      &lt;div class="name"&gt;DRANK TODAY&lt;/div&gt;
+      &lt;div class="total"&gt;&lt;span id="total"&gt;0&lt;/span&gt; &lt;small&gt;mL / 3000 mL&lt;/small&gt;&lt;/div&gt;
+      &lt;div class="track"&gt;&lt;div id="fill" class="fill"&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div id="progress" class="small"&gt;0% complete&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div&gt;
+      &lt;div id="verify" class="pill wait"&gt;Waiting for sensors&lt;/div&gt;
+      &lt;div id="event"&gt;Waiting for the first five-second average...&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section class="panel"&gt;
+    &lt;h2&gt;Dry sensor calibration&lt;/h2&gt;
+    &lt;div id="dryCalStatus" class="pill wait"&gt;Waiting for the first sensor average&lt;/div&gt;
+    &lt;p class="small"&gt;Make sure all three capacitance sensors are dry, then press the button. Wet thresholds will be Level 1 +3,000, Level 2 +10,000, and Level 3 +10,000 above their dry readings. Within ±1,000 of a threshold, the more reliable load cell chooses Wet or Dry.&lt;/p&gt;
+    &lt;button id="calibrateDry" disabled&gt;Calibrate dry sensors&lt;/button&gt;
+    &lt;div id="dryMsg" class="small"&gt;Tracking will begin only after dry calibration.&lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section class="panel"&gt;
+    &lt;h2&gt;Current bottle reading&lt;/h2&gt;
+    &lt;div class="grid"&gt;
+      &lt;div class="card"&gt;
+        &lt;div class="name"&gt;VERIFIED WATER&lt;/div&gt;
+        &lt;div class="value"&gt;&lt;span id="water"&gt;0&lt;/span&gt; mL&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="card"&gt;
+        &lt;div class="name"&gt;SAVED FIRM LEVEL&lt;/div&gt;
+        &lt;div class="value"&gt;&lt;span id="firmWater"&gt;---&lt;/span&gt; mL&lt;/div&gt;
+        &lt;div id="firmAge" class="small"&gt;Waiting for a verified level&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="card"&gt;
+        &lt;div class="name"&gt;LOAD CELL RAW&lt;/div&gt;
+        &lt;div id="loadRaw" class="value"&gt;---&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="card"&gt;
+        &lt;div class="name"&gt;LOAD CELL CONVERSION&lt;/div&gt;
+        &lt;div class="value"&gt;&lt;span id="loadMl"&gt;0&lt;/span&gt; mL&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="card"&gt;
+        &lt;div class="name"&gt;DETECTED CAP LEVEL&lt;/div&gt;
+        &lt;div id="capLevel" class="value"&gt;---&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="card"&gt;
+        &lt;div class="name"&gt;LOAD-CELL BAND&lt;/div&gt;
+        &lt;div id="loadBand" class="value"&gt;---&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="card"&gt;
+        &lt;div class="name"&gt;EXPECTED RAW RANGE&lt;/div&gt;
+        &lt;div id="expected" class="value"&gt;---&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="card"&gt;
+        &lt;div class="name"&gt;LAST DRINK&lt;/div&gt;
+        &lt;div class="value"&gt;&lt;span id="last"&gt;0&lt;/span&gt; mL&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="card"&gt;
+        &lt;div class="name"&gt;DRINK EVENTS&lt;/div&gt;
+        &lt;div id="count" class="value"&gt;0&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section class="panel"&gt;
+    &lt;h2&gt;Capacitance levels&lt;/h2&gt;
+    &lt;table&gt;
+      &lt;thead&gt;
+        &lt;tr&gt;
+          &lt;th&gt;Level / pins&lt;/th&gt;&lt;th&gt;Current raw&lt;/th&gt;&lt;th&gt;Dry baseline&lt;/th&gt;&lt;th&gt;Wet at/above&lt;/th&gt;&lt;th&gt;Decision&lt;/th&gt;&lt;th class="hide-mobile"&gt;Used now?&lt;/th&gt;
+        &lt;/tr&gt;
+      &lt;/thead&gt;
+      &lt;tbody&gt;
+        &lt;tr&gt;
+          &lt;td&gt;&lt;b&gt;Level 1&lt;/b&gt;&lt;br&gt;&lt;span class="small"&gt;D2, D5&lt;/span&gt;&lt;/td&gt;
+          &lt;td id="s1raw"&gt;---&lt;/td&gt;&lt;td id="s1base"&gt;---&lt;/td&gt;&lt;td id="s1threshold"&gt;---&lt;/td&gt;
+          &lt;td id="s1state" class="state unknown"&gt;---&lt;/td&gt;&lt;td id="s1used" class="hide-mobile"&gt;Yes&lt;/td&gt;
+        &lt;/tr&gt;
+        &lt;tr&gt;
+          &lt;td&gt;&lt;b&gt;Level 2&lt;/b&gt;&lt;br&gt;&lt;span class="small"&gt;D1, D4&lt;/span&gt;&lt;/td&gt;
+          &lt;td id="s2raw"&gt;---&lt;/td&gt;&lt;td id="s2base"&gt;---&lt;/td&gt;&lt;td id="s2threshold"&gt;---&lt;/td&gt;
+          &lt;td id="s2state" class="state unknown"&gt;---&lt;/td&gt;&lt;td id="s2used" class="hide-mobile"&gt;Waiting&lt;/td&gt;
+        &lt;/tr&gt;
+        &lt;tr&gt;
+          &lt;td&gt;&lt;b&gt;Level 3&lt;/b&gt;&lt;br&gt;&lt;span class="small"&gt;D0, D3&lt;/span&gt;&lt;/td&gt;
+          &lt;td id="s3raw"&gt;---&lt;/td&gt;&lt;td id="s3base"&gt;---&lt;/td&gt;&lt;td id="s3threshold"&gt;---&lt;/td&gt;
+          &lt;td id="s3state" class="state unknown"&gt;---&lt;/td&gt;&lt;td id="s3used" class="hide-mobile"&gt;Waiting&lt;/td&gt;
+        &lt;/tr&gt;
+      &lt;/tbody&gt;
+    &lt;/table&gt;
+    &lt;div class="small"&gt;A reading below its calibrated threshold is Dry. A reading at or above it is Wet. Within ±1,000 of that threshold, the load-cell band may override the decision.&lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section class="panel"&gt;
+    &lt;h2&gt;Load-cell calibration and bands&lt;/h2&gt;
+    &lt;table&gt;
+      &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Band&lt;/th&gt;&lt;th&gt;Raw range&lt;/th&gt;&lt;th&gt;Capacitance pattern expected&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+      &lt;tbody&gt;
+        &lt;tr&gt;&lt;td&gt;Stage 1 band&lt;/td&gt;&lt;td&gt;14,000–18,999&lt;/td&gt;&lt;td&gt;Level 1 dry&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Stage 1–2 transition&lt;/td&gt;&lt;td&gt;19,000–28,000&lt;/td&gt;&lt;td&gt;Level 1 wet; Level 2 dry&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Stage 2 band&lt;/td&gt;&lt;td&gt;28,001–34,000&lt;/td&gt;&lt;td&gt;Levels 1–2 wet; Level 3 dry&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Stage 3 band&lt;/td&gt;&lt;td&gt;34,001–53,650&lt;/td&gt;&lt;td&gt;All three levels wet&lt;/td&gt;&lt;/tr&gt;
+      &lt;/tbody&gt;
+    &lt;/table&gt;
+    &lt;div class="small"&gt;Calibration: raw 17,000 = 0 mL; raw 53,650 = 516 mL. Endpoint tolerance: ±1,000 raw.&lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section class="panel"&gt;
+    &lt;h2&gt;Reminder and controls&lt;/h2&gt;
+    &lt;div class="grid"&gt;
+      &lt;div class="card"&gt;&lt;div class="name"&gt;NEXT REMINDER&lt;/div&gt;&lt;div class="value"&gt;&lt;span id="reminder"&gt;60&lt;/span&gt; min&lt;/div&gt;&lt;/div&gt;
+      &lt;div class="card"&gt;&lt;div class="name"&gt;TIME WITHOUT DRINK&lt;/div&gt;&lt;div class="value" id="idle"&gt;0 min&lt;/div&gt;&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;button id="enableReminder"&gt;Enable hourly reminders&lt;/button&gt;
+    &lt;button id="baseline"&gt;Use current level as baseline&lt;/button&gt;
+    &lt;button id="reset" class="alt"&gt;Reset today's total&lt;/button&gt;
+    &lt;div class="small"&gt;The page must remain open. It uses a browser notification when allowed, otherwise a page alert.&lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;footer id="status"&gt;Connecting...&lt;/footer&gt;
+&lt;/main&gt;
+
+&lt;script&gt;
+const q=id=>document.getElementById(id);
+let reminders=localStorage.getItem('waterReminders')==='on';
+let lastReminderCycle=0;
+
+function stateText(value){
+  if(value===1)return 'Wet';
+  if(value===0)return 'Dry';
+  return 'Not calibrated';
+}
+
+function showState(id,value,assisted){
+  const e=q(id);
+  e.textContent=stateText(value)+(assisted?' (load assisted)':'');
+  e.className='state '+(value===1?'wet':value===0?'dry':'unknown');
+}
+
+function sendReminder(){
+  const message='It has been one hour without a detected drink. Time to drink water!';
+  if('Notification' in window && Notification.permission==='granted'){
+    new Notification('Smart Water Bottle',{body:message});
+  }else{
+    alert(message);
+  }
+}
+
+async function getData(){
+  const response=await fetch('/data?t='+Date.now(),{cache:'no-store'});
+  if(!response.ok)throw new Error('request failed');
+  return response.json();
+}
+
+async function update(){
+  try{
+    const d=await getData();
+
+    q('total').textContent=Math.round(d.total);
+    q('water').textContent=Math.round(d.water);
+    q('firmWater').textContent=d.firmReady?Math.round(d.firmWater):'---';
+    q('firmAge').textContent=d.firmReady
+      ?'Refreshed '+d.firmAge+' seconds ago'
+      :'Waiting for a verified level';
+    q('loadRaw').textContent=d.loadReady?d.loadRaw:'Not ready';
+    q('loadMl').textContent=Math.round(d.loadMl);
+    q('capLevel').textContent=d.capLevelName;
+    q('loadBand').textContent=d.loadBandName;
+    q('expected').textContent=d.expectedRange;
+    q('last').textContent=Math.round(d.last);
+    q('count').textContent=d.count;
+    q('event').textContent=d.event;
+    q('fill').style.width=d.percent+'%';
+    q('progress').textContent=Math.round(d.percent)+'% complete';
+
+    q('s1raw').textContent=d.s1raw;
+    q('s2raw').textContent=d.s2raw;
+    q('s3raw').textContent=d.s3raw;
+    q('s1base').textContent=d.capCalibrated?d.s1base:'---';
+    q('s2base').textContent=d.capCalibrated?d.s2base:'---';
+    q('s3base').textContent=d.capCalibrated?d.s3base:'---';
+    q('s1threshold').textContent=d.capCalibrated?d.s1threshold:'---';
+    q('s2threshold').textContent=d.capCalibrated?d.s2threshold:'---';
+    q('s3threshold').textContent=d.capCalibrated?d.s3threshold:'---';
+    showState('s1state',d.s1state,d.s1assisted);
+    showState('s2state',d.s2state,d.s2assisted);
+    showState('s3state',d.s3state,d.s3assisted);
+    q('s1used').textContent='Yes';
+    q('s2used').textContent=d.s2used?'Yes':'Waiting for Level 1';
+    q('s3used').textContent=d.s3used?'Yes':'Waiting for Level 2';
+
+    const dryStatus=q('dryCalStatus');
+    const dryButton=q('calibrateDry');
+    dryButton.disabled=!d.averageReady;
+
+    if(d.capCalibrated){
+      dryStatus.textContent='Dry calibration completed';
+      dryStatus.className='pill good';
+      dryButton.textContent='Recalibrate dry sensors';
+    }else if(d.averageReady){
+      dryStatus.textContent='Ready — make sure every sensor is dry';
+      dryStatus.className='pill wait';
+      dryButton.textContent='Calibrate dry sensors';
+    }else{
+      dryStatus.textContent='Waiting for the first sensor average';
+      dryStatus.className='pill wait';
+    }
+
+    const verify=q('verify');
+    if(!d.capCalibrated){
+      verify.textContent='Dry calibration required';
+      verify.className='pill wait';
+    }else if(d.settling){
+      verify.textContent='Water changed — waiting 5 seconds';
+      verify.className='pill wait';
+    }else if(d.verified){
+      verify.textContent='Sensors agree — tracking';
+      verify.className='pill good';
+    }else if(d.capLevel<0 || !d.loadReady){
+      verify.textContent='Waiting for stable data';
+      verify.className='pill wait';
+    }else{
+      verify.textContent='Sensor mismatch — tracking paused';
+      verify.className='pill bad';
+    }
+
+    q('reminder').textContent=d.reminder;
+    q('idle').textContent=Math.floor(d.seconds/60)+' min';
+
+    if(d.seconds<3600){
+      lastReminderCycle=0;
+    }else if(reminders){
+      const cycle=Math.floor(d.seconds/3600);
+      if(cycle>lastReminderCycle){
+        lastReminderCycle=cycle;
+        sendReminder();
+      }
+    }
+
+    q('status').textContent='Live · '+new Date().toLocaleTimeString();
+  }catch(error){
+    q('status').textContent='Connection lost. Reload the page.';
+  }
+}
+
+q('enableReminder').onclick=async()=>{
+  if('Notification' in window && Notification.permission==='default'){
+    try{await Notification.requestPermission();}catch(error){}
+  }
+  reminders=true;
+  localStorage.setItem('waterReminders','on');
+  q('enableReminder').textContent='Hourly reminders enabled';
+  q('enableReminder').disabled=true;
+};
+
+q('calibrateDry').onclick=async()=>{
+  q('calibrateDry').disabled=true;
+  q('dryMsg').textContent='Saving the current dry readings...';
+
+  try{
+    const response=await fetch('/calibrate-dry',{method:'POST'});
+    const result=await response.json();
+    q('dryMsg').textContent=result.message;
+    await update();
+  }catch(error){
+    q('dryMsg').textContent='Dry calibration failed. Try again.';
+  }
+};
+
+q('baseline').onclick=async()=>{
+  await fetch('/baseline',{method:'POST'});
+  await update();
+};
+
+q('reset').onclick=async()=>{
+  if(confirm("Reset today's total?")){
+    await fetch('/reset',{method:'POST'});
+    await update();
+  }
+};
+
+if(reminders){
+  q('enableReminder').textContent='Hourly reminders enabled';
+  q('enableReminder').disabled=true;
+}
+
+update();
+setInterval(update,3000);
+</script>
+</body>
+</html>
+)HTML";
+
+// ============================================================
+// SENSOR INTERPRETATION
+// ============================================================
+
+float loadRawToMl(long raw) {
+  float ml = LOAD_EMPTY_ML +
+    (float)(raw - LOAD_EMPTY_RAW) *
+    (LOAD_FULL_ML - LOAD_EMPTY_ML) /
+    (float)(LOAD_FULL_RAW - LOAD_EMPTY_RAW);
+
+  if (ml < LOAD_EMPTY_ML) ml = LOAD_EMPTY_ML;
+  if (ml > LOAD_FULL_ML) ml = LOAD_FULL_ML;
+  return ml;
+}
+
+MoistureState classifyCapValue(int level, long value) {
+  capAssistedByLoad[level] = false;
+  if (!capDryCalibrated) return MOISTURE_UNKNOWN;
+
+  MoistureState normalState = value < capWetThreshold[level]
+    ? MOISTURE_DRY
+    : MOISTURE_WET;
+
+  // Cap level N should be wet whenever the load-cell band is above N.
+  // Only let the load cell override a capacitance decision when the raw
+  // capacitance value is within ±1,000 of its calibrated wet threshold.
+  if (
+    loadBand >= 0 &&
+    value >= capWetThreshold[level] - CAP_LOAD_ASSIST_TOLERANCE &&
+    value <= capWetThreshold[level] + CAP_LOAD_ASSIST_TOLERANCE
+  ) {
+    MoistureState loadExpectedState = loadBand > level
+      ? MOISTURE_WET
+      : MOISTURE_DRY;
+
+    capAssistedByLoad[level] = loadExpectedState != normalState;
+    return loadExpectedState;
+  }
+
+  return normalState;
+}
+
+int determineCapLevel() {
+  // Sequential rule: only consult a higher sensor after the lower one is wet.
+  if (capState[0] == MOISTURE_UNKNOWN) return -1;
+  if (capState[0] == MOISTURE_DRY) return 0;
+
+  if (capState[1] == MOISTURE_UNKNOWN) return -1;
+  if (capState[1] == MOISTURE_DRY) return 1;
+
+  if (capState[2] == MOISTURE_UNKNOWN) return -1;
+  if (capState[2] == MOISTURE_DRY) return 2;
+
+  return 3;
+}
+
+int determineLoadBand(long raw) {
+  if (
+    raw >= LOAD_BAND_MIN[0] - LOAD_ENDPOINT_TOLERANCE &&
+    raw <= LOAD_BAND_MAX[0]
+  ) {
+    return 0;
+  }
+
+  if (
+    raw >= LOAD_BAND_MIN[3] &&
+    raw <= LOAD_BAND_MAX[3] + LOAD_ENDPOINT_TOLERANCE
+  ) {
+    return 3;
+  }
+
+  for (int band = 1; band < 3; band++) {
+    if (raw >= LOAD_BAND_MIN[band] && raw <= LOAD_BAND_MAX[band]) {
+      return band;
+    }
+  }
+  return -1;
+}
+
+const char* moistureName(MoistureState state) {
+  if (state == MOISTURE_WET) return "Wet";
+  if (state == MOISTURE_DRY) return "Dry";
+  return "Transition";
+}
+
+const char* capLevelName(int level) {
+  switch (level) {
+    case 0: return "Below Level 1";
+    case 1: return "Level 1";
+    case 2: return "Level 2";
+    case 3: return "Level 3";
+    default: return "Transition";
+  }
+}
+
+const char* loadBandName(int band) {
+  switch (band) {
+    case 0: return "Stage 1 band";
+    case 1: return "Stage 1–2 transition";
+    case 2: return "Stage 2 band";
+    case 3: return "Stage 3 band";
+    default: return "Outside ranges";
+  }
+}
+
+String expectedRangeName(int level) {
+  if (level < 0 || level > 3) return "Waiting";
+
+  long minimum = LOAD_BAND_MIN[level];
+  long maximum = LOAD_BAND_MAX[level];
+
+  if (level == 0) minimum -= LOAD_ENDPOINT_TOLERANCE;
+  if (level == 3) maximum += LOAD_ENDPOINT_TOLERANCE;
+
+  return String(minimum) + "–" + String(maximum);
+}
+
+// ============================================================
+// WATER TRACKING
+// ============================================================
+
+void saveFirmWater(float waterMl) {
+  lastFirmWater = waterMl;
+  referenceWater = waterMl;
+  firmWaterReady = true;
+  lastFirmRefreshAt = millis();
+}
+
+void refreshFirmWaterIfDue() {
+  if (
+    !trackingStarted ||
+    !firmWaterReady ||
+    drinkSettling ||
+    millis() - lastFirmRefreshAt < FIRM_REFRESH_INTERVAL
+  ) {
+    return;
+  }
+
+  // Refresh from the latest verified five-second average when the water has
+  // stayed level or increased. Allow only 2 mL of downward sensor noise; a
+  // larger decrease keeps the old checkpoint so unrecorded water is not lost.
+  if (acceptedWater + FIRM_REFRESH_NOISE_ML >= lastFirmWater) {
+    saveFirmWater(acceptedWater);
+  }
+}
+
+void beginDrinkSettling(unsigned long now) {
+  if (drinkSettling || !firmWaterReady) return;
+
+  waterBeforePossibleDrink = lastFirmWater;
+  drinkSettling = true;
+  drinkSettleStartedAt = now;
+  fastDropSampleCount = 0;
+  lastEvent = "Fast water drop detected; saved firm level " +
+    String(waterBeforePossibleDrink, 0) + " mL and started a fresh 5-second average";
+}
+
+void startOrResetBaseline(const String& message) {
+  if (!sensorsAgree) {
+    lastEvent = "Cannot set baseline until the sensors agree";
+    return;
+  }
+
+  saveFirmWater(acceptedWater);
+  drinkSettling = false;
+  fastDropSampleCount = 0;
+  lastDrinkTime = millis();
+  trackingStarted = true;
+  lastEvent = message;
+}
+
+void processWaterTracking() {
+  // This function is only called after the capacitance/load-cell cross-check.
+  if (!trackingStarted) {
+    saveFirmWater(acceptedWater);
+    lastDrinkTime = millis();
+    trackingStarted = true;
+    lastEvent = "Tracking started from the current verified level";
+    return;
+  }
+
+  float change = acceptedWater - referenceWater;
+
+  if (change >= REFILL_THRESHOLD_ML) {
+    saveFirmWater(acceptedWater);
+    lastEvent = "Refill detected: +" + String(change, 0) + " mL";
+    return;
+  }
+
+  // Falling levels are handled by the five-second settling state in
+  // evaluateCompletedAverages(). This prevents a partly settled value from
+  // being smoothed into the drink calculation.
+}
+
+void evaluateCompletedAverages() {
+  bool sensorsPreviouslyAgreed = sensorsAgree;
+
+  // Determine the more reliable load-cell band first. The capacitance
+  // classifier can then use it only inside the ±1,000 tolerance zone.
+  loadBand = loadCellReady ? determineLoadBand(loadRaw) : -1;
+  loadMl = loadCellReady ? loadRawToMl(loadRaw) : 0.0f;
+
+  for (int i = 0; i < 3; i++) {
+    capState[i] = classifyCapValue(i, capRaw[i]);
+  }
+
+  if (!capDryCalibrated) {
+    capLevel = -1;
+    sensorsAgree = false;
+    lastEvent = "Press Calibrate dry sensors before tracking";
+    return;
+  }
+
+  capLevel = determineCapLevel();
+
+  sensorsAgree =
+    loadCellReady &&
+    capLevel >= 0 &&
+    loadBand >= 0 &&
+    capLevel == loadBand;
+
+  // Fallback detection in case the fast live-sample path was unavailable.
+  if (
+    trackingStarted &&
+    firmWaterReady &&
+    loadCellReady &&
+    !drinkSettling &&
+    lastFirmWater - loadMl >= DRINK_THRESHOLD_ML
+  ) {
+    beginDrinkSettling(millis());
+    return;
+  }
+
+  if (drinkSettling) {
+    unsigned long settleElapsed = millis() - drinkSettleStartedAt;
+
+    if (settleElapsed < DRINK_SETTLE_TIME) {
+      unsigned long secondsLeft =
+        (DRINK_SETTLE_TIME - settleElapsed + 999UL) / 1000UL;
+      lastEvent = "Possible drink; settling for " + String(secondsLeft) + " more seconds";
+      return;
+    }
+
+    // Five seconds is the minimum. If the two sensing systems still disagree,
+    // keep waiting without changing the old reference value.
+    if (!sensorsAgree) {
+      lastEvent = "Five-second wait complete; waiting for capacitance and load cell to agree";
+      return;
+    }
+
+    float settledWater = loadMl;
+    float drank = waterBeforePossibleDrink - settledWater;
+
+    // Use the final unsmoothed value so the entire removal is recorded.
+    acceptedWater = settledWater;
+    filteredWater = settledWater;
+    filterStarted = true;
+    drinkSettling = false;
+    fastDropSampleCount = 0;
+
+    if (drank >= DRINK_THRESHOLD_ML && drank <= LOAD_FULL_ML) {
+      saveFirmWater(settledWater);
+      totalDrank += drank;
+      lastDrink = drank;
+      drinksToday++;
+      lastDrinkTime = millis();
+      lastEvent = "Drink detected from saved firm level: " + String(drank, 0) + " mL";
+    } else if (-drank >= REFILL_THRESHOLD_ML) {
+      float refilled = -drank;
+      saveFirmWater(settledWater);
+      lastEvent = "Refill detected during settling: +" + String(refilled, 0) + " mL";
+    } else if (drank < DRINK_THRESHOLD_ML) {
+      // Keep the previous firm reading. A later drop can still include this
+      // small change instead of losing it.
+      lastEvent = "Change was below 50 mL; previous firm level was kept";
+    } else {
+      saveFirmWater(settledWater);
+      lastEvent = "Settled drop exceeded bottle capacity; no drink recorded";
+    }
+
+    return;
+  }
+
+  if (!sensorsAgree) {
+    if (!loadCellReady) {
+      lastEvent = "Waiting for HX711 load-cell data";
+    } else if (capLevel < 0) {
+      lastEvent = "A capacitance value is in its transition zone";
+    } else if (loadBand < 0) {
+      lastEvent = "Load-cell raw value is outside the calibrated ranges";
+    } else {
+      lastEvent = "Cross-check mismatch; water tracking is paused";
+    }
+    return;
+  }
+
+  if (!sensorsPreviouslyAgreed && trackingStarted) {
+    lastEvent = "Sensor agreement restored; tracking resumed";
+  }
+
+  if (!filterStarted) {
+    filteredWater = loadMl;
+    filterStarted = true;
+  } else {
+    filteredWater = 0.35f * loadMl + 0.65f * filteredWater;
+  }
+
+  acceptedWater = filteredWater;
+  processWaterTracking();
+  refreshFirmWaterIfDue();
+}
+
+// ============================================================
+// NON-BLOCKING SENSOR UPDATE
+// ============================================================
+
+void updateSensors() {
+  unsigned long now = millis();
+
+  if (now - lastCapSampleAt >= CAP_SAMPLE_INTERVAL) {
+    lastCapSampleAt = now;
+
+    for (int i = 0; i < 3; i++) {
+      capTotals[i] += levelSensors[i]->read();
+    }
+    capSampleCount++;
+  }
+
+  // Read each HX711 sample only when one is ready, so the website stays fast.
+  if (loadCell.is_ready()) {
+    long liveLoadRaw = loadCell.read();
+    loadTotal += liveLoadRaw;
+    loadSampleCount++;
+
+    // Detect a real drop from live HX711 samples instead of waiting for the
+    // current five-second average to finish. Three consecutive low samples
+    // reject a one-sample spike while still reacting in well under a second.
+    if (trackingStarted && firmWaterReady && !drinkSettling) {
+      float liveLoadMl = loadRawToMl(liveLoadRaw);
+
+      if (lastFirmWater - liveLoadMl >= DRINK_THRESHOLD_ML) {
+        if (fastDropSampleCount < FAST_DROP_CONFIRM_SAMPLES) {
+          fastDropSampleCount++;
+        }
+      } else {
+        fastDropSampleCount = 0;
+      }
+
+      if (fastDropSampleCount >= FAST_DROP_CONFIRM_SAMPLES) {
+        beginDrinkSettling(now);
+
+        // Throw away the partly changed average and collect an entirely new
+        // five-second window after the drop was detected.
+        for (int i = 0; i < 3; i++) {
+          capTotals[i] = 0;
+        }
+        capSampleCount = 0;
+        loadTotal = 0;
+        loadSampleCount = 0;
+        averageWindowStartedAt = now;
+        lastCapSampleAt = now;
+        return;
+      }
+    }
+  }
+
+  if (now - averageWindowStartedAt < AVERAGE_WINDOW) return;
+
+  if (capSampleCount == 0) {
+    averageWindowStartedAt = now;
+    return;
+  }
+
+  for (int i = 0; i < 3; i++) {
+    capRaw[i] = static_cast<long>(capTotals[i] / capSampleCount);
+    capTotals[i] = 0;
+  }
+  sensorAverageReady = true;
+
+  if (loadSampleCount > 0) {
+    loadRaw = static_cast<long>(loadTotal / loadSampleCount);
+    loadCellReady = true;
+  } else {
+    loadCellReady = false;
+  }
+
+  uint32_t completedCapSamples = capSampleCount;
+  uint32_t completedLoadSamples = loadSampleCount;
+
+  capSampleCount = 0;
+  loadTotal = 0;
+  loadSampleCount = 0;
+  averageWindowStartedAt = now;
+
+  evaluateCompletedAverages();
+
+  Serial.println("\n--- Five-second sensor average ---");
+  for (int i = 0; i < 3; i++) {
+    Serial.print("Level ");
+    Serial.print(i + 1);
+    Serial.print(": ");
+    Serial.print(capRaw[i]);
+    Serial.print(" (");
+    Serial.print(moistureName(capState[i]));
+    if (capAssistedByLoad[i]) {
+      Serial.print(", load assisted");
+    }
+    Serial.println(")");
+  }
+
+  Serial.print("Load cell raw: ");
+  if (loadCellReady) {
+    Serial.print(loadRaw);
+    Serial.print(" = ");
+    Serial.print(loadMl, 1);
+    Serial.println(" mL");
+  } else {
+    Serial.println("not ready");
+  }
+
+  Serial.print("Cap level: ");
+  Serial.println(capLevelName(capLevel));
+  Serial.print("Load band: ");
+  Serial.println(loadBandName(loadBand));
+  Serial.print("Cross-check: ");
+  Serial.println(sensorsAgree ? "VERIFIED" : "MISMATCH / WAITING");
+  Serial.print("Samples: capacitance=");
+  Serial.print(completedCapSamples);
+  Serial.print(", load cell=");
+  Serial.println(completedLoadSamples);
+}
+
+// ============================================================
+// WEB ROUTES
+// ============================================================
+
+void handleData() {
+  float percent = totalDrank / DAILY_GOAL_ML * 100.0f;
+  if (percent < 0.0f) percent = 0.0f;
+  if (percent > 100.0f) percent = 100.0f;
+
+  unsigned long secondsSinceDrink = trackingStarted
+    ? (millis() - lastDrinkTime) / 1000UL
+    : 0;
+
+  unsigned long secondsLeft = secondsSinceDrink >= REMINDER_TIME / 1000UL
+    ? 0
+    : REMINDER_TIME / 1000UL - secondsSinceDrink;
+
+  unsigned long reminderMinutes = (secondsLeft + 59UL) / 60UL;
+
+  bool useLevel2 = capState[0] == MOISTURE_WET;
+  bool useLevel3 = useLevel2 && capState[1] == MOISTURE_WET;
+
+  String json;
+  json.reserve(1150);
+  json += "{";
+  json += "\"averageReady\":" + String(sensorAverageReady ? "true" : "false");
+  json += ",\"capCalibrated\":" + String(capDryCalibrated ? "true" : "false");
+  json += ",\"loadReady\":" + String(loadCellReady ? "true" : "false");
+  json += ",\"loadRaw\":" + String(loadRaw);
+  json += ",\"loadMl\":" + String(loadMl, 1);
+  json += ",\"water\":" + String(acceptedWater, 1);
+  json += ",\"firmWater\":" + String(lastFirmWater, 1);
+  json += ",\"firmReady\":" + String(firmWaterReady ? "true" : "false");
+  json += ",\"firmAge\":" + String(
+    firmWaterReady ? (millis() - lastFirmRefreshAt) / 1000UL : 0
+  );
+  json += ",\"total\":" + String(totalDrank, 1);
+  json += ",\"last\":" + String(lastDrink, 1);
+  json += ",\"count\":" + String(drinksToday);
+  json += ",\"percent\":" + String(percent, 1);
+  json += ",\"seconds\":" + String(secondsSinceDrink);
+  json += ",\"reminder\":" + String(reminderMinutes);
+  json += ",\"settling\":" + String(drinkSettling ? "true" : "false");
+  json += ",\"verified\":" + String(sensorsAgree ? "true" : "false");
+  json += ",\"capLevel\":" + String(capLevel);
+  json += ",\"capLevelName\":\"" + String(capLevelName(capLevel)) + "\"";
+  json += ",\"loadBand\":" + String(loadBand);
+  json += ",\"loadBandName\":\"" + String(loadBandName(loadBand)) + "\"";
+  json += ",\"expectedRange\":\"" + expectedRangeName(capLevel) + "\"";
+  json += ",\"s1raw\":" + String(capRaw[0]);
+  json += ",\"s2raw\":" + String(capRaw[1]);
+  json += ",\"s3raw\":" + String(capRaw[2]);
+  json += ",\"s1base\":" + String(capDryBaseline[0]);
+  json += ",\"s2base\":" + String(capDryBaseline[1]);
+  json += ",\"s3base\":" + String(capDryBaseline[2]);
+  json += ",\"s1threshold\":" + String(capWetThreshold[0]);
+  json += ",\"s2threshold\":" + String(capWetThreshold[1]);
+  json += ",\"s3threshold\":" + String(capWetThreshold[2]);
+  json += ",\"s1state\":" + String((int)capState[0]);
+  json += ",\"s2state\":" + String((int)capState[1]);
+  json += ",\"s3state\":" + String((int)capState[2]);
+  json += ",\"s1assisted\":" + String(capAssistedByLoad[0] ? "true" : "false");
+  json += ",\"s2assisted\":" + String(capAssistedByLoad[1] ? "true" : "false");
+  json += ",\"s3assisted\":" + String(capAssistedByLoad[2] ? "true" : "false");
+  json += ",\"s2used\":" + String(useLevel2 ? "true" : "false");
+  json += ",\"s3used\":" + String(useLevel3 ? "true" : "false");
+  json += ",\"event\":\"" + lastEvent + "\"";
+  json += "}";
+
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", json);
+}
+
+void handleCalibrateDry() {
+  if (!sensorAverageReady) {
+    server.send(
+      409,
+      "application/json",
+      "{\"message\":\"Wait for the first five-second sensor average.\"}"
+    );
+    return;
+  }
+
+  for (int i = 0; i < 3; i++) {
+    capDryBaseline[i] = capRaw[i];
+    capWetThreshold[i] = capRaw[i] + CAP_WET_OFFSET[i];
+    capState[i] = MOISTURE_DRY;
+    capAssistedByLoad[i] = false;
+  }
+
+  capDryCalibrated = true;
+  capLevel = 0;
+  sensorsAgree = false;
+  filterStarted = false;
+  trackingStarted = false;
+  drinkSettling = false;
+  firmWaterReady = false;
+  fastDropSampleCount = 0;
+  acceptedWater = 0.0f;
+  filteredWater = 0.0f;
+  referenceWater = 0.0f;
+  lastFirmWater = 0.0f;
+  lastDrinkTime = millis();
+  lastEvent = "Dry calibration saved; waiting for the next sensor average";
+
+  Serial.println("\nDry capacitance calibration saved:");
+  for (int i = 0; i < 3; i++) {
+    Serial.print("Level ");
+    Serial.print(i + 1);
+    Serial.print(" baseline=");
+    Serial.print(capDryBaseline[i]);
+    Serial.print(", wet at/above ");
+    Serial.println(capWetThreshold[i]);
+  }
+
+  server.send(
+    200,
+    "application/json",
+    "{\"message\":\"Dry readings saved with Level 1 +3,000, Level 2 +10,000, and Level 3 +10,000.\"}"
+  );
+}
+
+void handleReset() {
+  totalDrank = 0.0f;
+  lastDrink = 0.0f;
+  drinksToday = 0;
+  drinkSettling = false;
+  fastDropSampleCount = 0;
+
+  if (sensorsAgree) {
+    saveFirmWater(acceptedWater);
+    trackingStarted = true;
+  } else {
+    firmWaterReady = false;
+    trackingStarted = false;
+  }
+
+  lastDrinkTime = millis();
+  lastEvent = "Today's total was reset";
+  server.send(200, "application/json", "{\"message\":\"Total reset.\"}");
+}
+
+void handleBaseline() {
+  startOrResetBaseline("Baseline reset to the current verified water level");
+  server.send(200, "application/json", "{\"message\":\"Baseline request processed.\"}");
+}
+
+void startWebServer() {
+  server.on("/", HTTP_GET, []() {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send_P(200, "text/html", PAGE);
+  });
+
+  server.on("/data", HTTP_GET, handleData);
+  server.on("/calibrate-dry", HTTP_POST, handleCalibrateDry);
+  server.on("/reset", HTTP_POST, handleReset);
+  server.on("/baseline", HTTP_POST, handleBaseline);
+  server.on("/ping", HTTP_GET, []() {
+    server.send(200, "text/plain", "OK");
+  });
+
+  server.begin();
+}
+
+void printWebsiteAddress() {
+  Serial.println();
+  Serial.println("==================================================");
+  Serial.println("        SMART WATER BOTTLE WEBSITE");
+  Serial.print("COPY THIS LINK INTO YOUR BROWSER: http://");
+
+  if (usingBackupHotspot) {
+    Serial.print(WiFi.softAPIP());
+  } else {
+    Serial.print(WiFi.localIP());
+  }
+
+  Serial.println("/");
+  Serial.println("==================================================");
+  Serial.println();
+}
+
+// ============================================================
+// SETUP / LOOP
+// ============================================================
+
+void setup() {
+  Serial.begin(115200);
+  delay(1200);
+
+  sensor1.begin();
+  sensor2.begin();
+  sensor3.begin();
+  loadCell.begin(HX711_DT, HX711_SCK);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(WIFI_NAME, WIFI_PASSWORD);
+
+  Serial.print("Connecting to Wi-Fi");
+  unsigned long connectionStarted = millis();
+
+  while (
+    WiFi.status() != WL_CONNECTED &&
+    millis() - connectionStarted < 30000UL
+  ) {
+    delay(400);
+    Serial.print(".");
+  }
+
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    usingBackupHotspot = false;
+  } else {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(AP_NAME, AP_PASSWORD);
+    usingBackupHotspot = true;
+
+    Serial.println("Normal Wi-Fi failed; fallback hotspot started.");
+    Serial.print("Join network: ");
+    Serial.println(AP_NAME);
+  }
+
+  startWebServer();
+  printWebsiteAddress();
+  lastLinkPrintAt = millis();
+
+  averageWindowStartedAt = millis();
+  lastCapSampleAt = millis();
+
+  Serial.println("Server ready. Sensor averages update every five seconds.");
+}
+
+void loop() {
+  server.handleClient();
+  updateSensors();
+
+  // Reprint the link every minute in case the startup message was missed.
+  if (millis() - lastLinkPrintAt >= LINK_PRINT_INTERVAL) {
+    lastLinkPrintAt = millis();
+    printWebsiteAddress();
+  }
+
+  delay(1);
+}
+
+
+</code></pre>
