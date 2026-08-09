@@ -212,6 +212,18 @@
       <p>
        <a href="./Water_Code.html" target="_blank">CLick Me! Link to code</a>
       </p>
+      <p style="color:white">The code starts by activating all the hardware including the capacitance sensors and loadcell. The xiao then connects to wifi and displays the 
+        website link. Then the data from the 3 capacitance sensors and load cell are read then averaged over 5 seconds to reduce inconsistencies. The load 
+        cell then converts the data it receives into milliliters. After this when you press the calibrate dry sensors button it takes the last data and 
+        creates wet thresholds by adding 2000, 7000, and 10000 for levels 1, 2, and 3 respectively. The capacitive data is the then checked with
+        the load cell data to make sure that they are in the same range. The load cell is able to assist with the capacitance readings if it is in a +-1000 range,
+        if this is the case then the website will show (load assisted) next to the result. If the readings do not agree it will display that there is a sensor
+        mismatch and will pause the tracking of the water. If both readings agree then tracking is continued and the website will continuously save the last firm 
+        water level. If the water level drops by atleast 50 mL from the last firm water level it assumes that a drink could have started. If the water level drops
+        and both load cell and capacitance sensor agree then it will record the drink and resets the hourly notification timer. The code also detects refills 
+        and constantly updates the website with various information, the website also sends hourly reminders in the form of notifications if the water level has 
+        not changed by a significant amount in the last hour.
+      </p>
     </section>
   </body>
 
